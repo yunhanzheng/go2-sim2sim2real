@@ -1,0 +1,67 @@
+# systemd unit for the Go2 Jetson RealSense driver — the ONLY thing the Jetson
+# runs for the fused deploy architecture (all depth processing lives on the Mac).
+#
+# Fixes baked in vs the old boot launch:
+#   - depth_module.laser_power:=350 persisted (2026-07-24 FOV debug: fewer
+#     holes on low-texture surfaces; was runtime-only before and lost on reboot)
+#   - Restart=always so a crashed driver comes back on its own
+#   - paired with go2-realsense-watchdog.service, which catches the WEDGED
+#     state (node alive + topics advertised + zero frames) that Restart=
+#     cannot see, observed 2026-07-27
+#
+# Install (as root on the Jetson): see INSTALL.md in this directory.
+
+[Unit]
+Description=Go2 RealSense depth driver (480x270x60, depth only, laser 350)
+After=network.target
+
+[Service]
+Type=simple
+User=unitree
+# DDS environment carried over from the original realsense-depth.service —
+# REQUIRED for the Mac to see the topics (CycloneDDS + interface config;
+# default FastRTPS on the default interface is invisible to the deploy stack).
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=ROS_DOMAIN_ID=0
+Environment=CYCLONEDDS_URI=/home/unitree/cyclonedds_ws/cyclonedds.xml
+# RATE + FOV: 480x270x60 (was 640x480x30). Both constraints are satisfied by
+# this profile, over the SAME USB 2 link — no hardware change.
+#
+# RATE: the fused age gate delivers age in [80, 80+T) ms for camera period T;
+# the trained band is 80-100 ms (Isaac capture_interval=1 @ 20 ms, latency_range
+# [4,5]), so T<=20 ms. At 60 fps T=16.7 ms -> age in [80.0, 96.7] ms, i.e.
+# 100% IN-BAND. The previous 640x480x30 (T=33.3 ms) delivered [80, 113.3] ms:
+# only 60% in-band, worst overshoot 13 ms past the trained cap.
+#
+# FOV: the depth FOV is resolution-dependent. 480x270 is a downscale of the
+# native 848x480 and keeps its 89.2 x 58.0 deg field; 640x480 (4:3) is only
+# 78.8 x 63.3. Training rendered 87 x 56.49, so depth_camera_node's tan-space
+# crop reaches the trained geometry EXACTLY at 480x270 (fills the full 106x60
+# render grid, zero padding), whereas at 640x480 the horizontal FOV falls short
+# and 14 of 106 columns (13% of every frame) were padded with synthetic
+# DEPTH_FAR — off-distribution input the encoder never saw in training.
+#
+# USB 2 is why this profile and not 848x480x60: the Go2's Jetson enumerates the
+# camera at 480M and CANNOT do SuperSpeed on any port (verified 2026-07-27 with
+# the camera, a USB3 flash drive and a USB3 dock, on both host ports incl. the
+# one whose SS lane is enabled in the device tree; dmesg shows no SS link-train
+# attempt, so it is carrier wiring, not power or cable). USB 2 caps 848x480 at
+# 10 fps and 640x480 at 30; 480x270 is the only mode offering 60.
+#
+# Downsample tradeoff: 480x270 is below the sensor's native depth resolution, so
+# the disparity map is noisier than 848x480 would be. It still oversamples the
+# render grid 4.4x per output pixel (the policy input is only 58x87), but thin
+# obstacle edges are where any regression would show — A/B before trusting it.
+ExecStart=/bin/bash -c 'source /opt/ros/foxy/setup.bash && source /home/unitree/cyclonedds_ws/install/setup.bash && exec ros2 launch realsense2_camera rs_launch.py enable_color:=false enable_infra1:=false enable_infra2:=false depth_module.profile:=480x270x60'
+# laser_power as a launch arg does NOT take on this Foxy driver (verified:
+# param read back 150 after launch with :=350). Set it post-start, with
+# retries while the node finishes coming up.
+ExecStartPost=/bin/bash -c 'source /opt/ros/foxy/setup.bash && source /home/unitree/cyclonedds_ws/install/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=0 CYCLONEDDS_URI=/home/unitree/cyclonedds_ws/cyclonedds.xml; n=0; while [ "$$n" -lt 20 ]; do sleep 3; ros2 param set /camera/camera depth_module.laser_power 350.0 2>/dev/null && exit 0; n=$$((n+1)); done; echo "laser_power set FAILED"; exit 0'
+Restart=always
+RestartSec=3
+# give the USB stack a moment between restart storms
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

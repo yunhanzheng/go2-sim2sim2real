@@ -1,0 +1,136 @@
+<mujoco model="go2 two-hurdle wall">
+  <!--
+    Replicates the extreme-parkour `flyball_wall_terrain` (env_class 19) as
+    configured in `Go2AdvancedCfg.terrain` (two hurdles + wall ramp). All
+    cfg-jittered values are pinned to the midpoint here.
+
+    Cfg → world conversion. Robot spawn matches Isaac:
+      env_origin_x   = i*env_length + 1.0   (legged_gym/utils/terrain.py:609)
+      base_init      = env_origin + init_state.pos      (legged_robot.py:988-989)
+      init_state.pos = (0, 0, 0.42)         (go2_config.py:35)
+    so the robot spawns at terrain-local x = 1.0 (1.0 m into the 2.5 m start
+    platform). We anchor world x = terrain_x − 1.0 so the deploy spawn at
+    world (0, 0, 0.42) matches the Isaac spawn.
+
+      platform_len            = 2.5
+      flyball_single_hurdle_offset           = 0.5  → hurdle 1 centre terrain x = 3.0  → world x = 2.0
+      flyball_second_hurdle_offset           = 2.0  → hurdle 2 centre terrain x = 5.0  → world x = 4.0
+      flyball_single_hurdle_height_range     = (0.1, 0.15) → 0.125 (mid)
+      flyball_single_hurdle_thickness        = 0.18
+      flyball_single_hurdle_width            = 2.0
+      flyball_runup_dist_range               = (5.0, 6.0)  → 5.5 (mid)
+        wall_x0 (back/peak of slope) terrain x = p_len + runup = 8.0 → world 7.0
+        wall front face            terrain x = wall_x0 − wall_thickness = 7.65 → world 6.65
+      wall_thickness = 0.35, wall_height = 1.0, wall_width = 3.0
+      wall_angle = 70° (Go2RoughCfg default)
+      wall_base delta_z = 0.10
+
+    World layout (robot spawns at world (0, 0, 0.42)):
+      - flat ground plane
+      - hurdle 1 box at (2.0, 0, 0.0625), full size 0.18 × 2.0 × 0.125
+      - hurdle 2 box at (4.0, 0, 0.0625), full size 0.18 × 2.0 × 0.125
+      - 10 cm vertical lip at world x = 6.65, z ∈ [0, 0.10]
+      - inclined ramp box (tilted 20° about +y, top forward), thickness 0.35,
+        width 3.0; front face from (6.65, 0, 0.10) to (7.014, 0, 1.10)
+      - flat-top wall back: world x ∈ [7.014, 7.364], z ∈ [0, 1.10]
+
+    Spawn-to-feature distances (forward gap, world frame, matches Isaac exactly):
+      spawn → hurdle 1 centre   : 2.00 m
+      spawn → hurdle 2 centre   : 4.00 m
+      spawn → wall front face   : 6.65 m
+
+    Approach floor carries minor uniform roughness from `terrain_noise.png`
+    (heights ∈ [0, 0.025] m, ~0.075 m cells, 5 mm steps), regenerable via
+    scripts/gen_terrain_noise.py. The PNG zeros pixels under each hurdle so
+    the boxes sit flush. Easy end of Isaac's `roughness_height=(0.02, 0.06)`.
+  -->
+  <include file="go2.xml"/>
+
+  <option timestep="0.005"/>
+
+  <statistic center="3.5 0 0.5" extent="4.0"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="obstacle"   rgba="0.55 0.55 0.6 1.0"/>
+    <material name="wall_face"  rgba="0.45 0.45 0.55 1.0"/>
+
+    <!-- Approach-floor roughness. Footprint matches gen_terrain_noise.py:
+         X half = (6.5 − (−0.5))/2 = 3.5, centred at x = 3.0
+         Y half = 2.0, centred at y = 0
+         Zmax  = 0.025  (peak bump above z=0)
+         Zmin  = 0.001  (1 mm base box, required > 0) -->
+    <hfield name="approach_noise" file="terrain_noise.png" size="3.5 2.0 0.025 0.001"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="2.0 0.01 0.02"/>
+
+    <!-- Approach-floor noise. Centre at (3.0, 0, 0); pixel value 0 → z=0
+         (matches the plane), value 255 → z=0.025. Pixels under the hurdles
+         are baked to 0 in terrain_noise.png so the boxes sit flush. -->
+    <geom name="approach_noise" type="hfield" hfield="approach_noise"
+          pos="3.0 0 0" material="groundplane"
+          friction="2.0 0.01 0.02"/>
+
+    <!-- Hurdle 1: thickness 0.18, width 2.0, height 0.125, world x = 2.0 (2 m past spawn) -->
+    <geom name="flyball_hurdle1" type="box"
+          pos="2.0 0 0.0625"
+          size="0.09 1.0 0.0625"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+
+    <!-- Hurdle 2: same dimensions, world x = 4.0 (2 m centre-to-centre past h1) -->
+    <geom name="flyball_hurdle2" type="box"
+          pos="4.0 0 0.0625"
+          size="0.09 1.0 0.0625"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+
+    <!--
+      Wall lip — vertical step at the wall front (world x = 6.65) from z = 0
+      to z = delta_z = 0.10. Modeled as a thin upright box.
+      Centre x = 6.65 + 0.025 = 6.675; size 0.05 × 3.0 × 0.10.
+    -->
+    <geom name="flyball_wall_lip" type="box"
+          pos="6.675 0 0.05"
+          size="0.025 1.5 0.05"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+
+    <!--
+      Inclined wall ramp — tilted box of full wall thickness 0.35.
+      Slope length 1.064 m; front face (6.65, 0, 0.10) → (7.014, 0, 1.10).
+      Box centre offset inward by half-thickness 0.175 along the slope normal
+      (sin70°, 0, −cos70°) = (0.940, 0, −0.342) → centre (6.997, 0, 0.540).
+      half-extents: 0.175 × 1.5 × 0.532  (thickness × width × slope-length)/2
+    -->
+    <geom name="flyball_wall_ramp" type="box"
+          pos="6.997 0 0.540"
+          size="0.175 1.5 0.532"
+          euler="0 0.34906585 0"
+          material="wall_face"
+          friction="2.0 0.01 0.02"/>
+
+    <!--
+      Wall back — vertical box from x ∈ [7.014, 7.364] (length =
+      wall_thickness = 0.35), z ∈ [0, 1.10]. Lets the depth camera see the
+      correct silhouette near the top of the wall.
+    -->
+    <geom name="flyball_wall_back" type="box"
+          pos="7.189 0 0.55"
+          size="0.175 1.5 0.55"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+  </worldbody>
+</mujoco>

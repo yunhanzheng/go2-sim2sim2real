@@ -1,0 +1,19 @@
+# Extreme-parkour distillation deploy config.
+# Values mirror Go2Advanced2Cfg (training) and the harness in distill_runner.py.
+
+# Paths are relative to the repo root. ep_root is the training repo that supplies
+# the policy classes: https://github.com/Roman-089/go2-flyball-parkour
+ckpt_path: "models/L00-02-flat-baseline-delay-distillation-noised/model_14500.pt"
+ep_root: "../go2-flyball-parkour"
+scene_xml: "resources/go2/scene_terrain.xml"
+
+# control gains pushed into low_level_ctrl via ROS params (training-side)
+policy_kp: 35.0
+policy_kd: 0.6
+
+# AI pipeline
+update_interval: 5            # depth-encoder cadence in 50 Hz ticks
+yaw_pred_multiplier: 1.5
+enforce_depth_latency_s: 0.080
+action_delay: 0               # off: T000 trained with action_delay=0; paper §4.1 enforces no artificial action delay
+lin_vel_max: 0.7

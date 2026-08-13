@@ -1,0 +1,75 @@
+<mujoco model="go2 ten-hurdle sequence terrain">
+  <!--
+    Sim2sim terrain: 10 hurdles in sequence on flat ground.
+
+    Robot spawns at world (0, 0, 0.42) facing +x, so the hurdles are laid out
+    along world +x. The first hurdle is 2 m ahead of spawn to give the robot
+    room to stand and engage.
+
+    Design constraints (this scene):
+      - DIFFERENT heights, varied within the training distribution [0.05, 0.25] m
+        (flyball hurdle height ranges; keeps the hurdles traversable / in-dist).
+      - DIFFERENT centre-to-centre inter-hurdle distances, every gap <= 2.0 m.
+      - Hurdle thickness = 0.15 m (size_x = 0.075), width = 2.0 m (size_y = 1.0),
+        matching scene_2hurdles_* (flyball_single_hurdle_thickness).
+
+    Layout (x = centre along +x; gap = distance to previous hurdle; h = full height):
+        #   x (m)   gap (m)   h (m)
+        01   2.0     -        0.08
+        02   3.5     1.5      0.15
+        03   5.5     2.0      0.20
+        04   6.8     1.3      0.10
+        05   8.6     1.8      0.25
+        06   9.8     1.2      0.12
+        07  11.8     2.0      0.18
+        08  13.4     1.6      0.06
+        09  14.8     1.4      0.22
+        10  16.7     1.9      0.14
+    For each hurdle: pos_z = h/2 and size_z = h/2 so it sits on the floor.
+  -->
+  <include file="go2.xml"/>
+
+  <option timestep="0.005"/>
+
+  <statistic center="9 0 0.5" extent="11"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="obstacle" rgba="0.55 0.55 0.6 1.0"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="2.0 0.01 0.02"/>
+
+    <!-- 01: x=2.0  h=0.08 -->
+    <geom name="hurdle_01" type="box" pos="2.0 0 0.040"  size="0.075 1.0 0.040" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 02: x=3.5  gap=1.5  h=0.15 -->
+    <geom name="hurdle_02" type="box" pos="3.5 0 0.075"  size="0.075 1.0 0.075" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 03: x=5.5  gap=2.0  h=0.20 -->
+    <geom name="hurdle_03" type="box" pos="5.5 0 0.100"  size="0.075 1.0 0.100" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 04: x=6.8  gap=1.3  h=0.10 -->
+    <geom name="hurdle_04" type="box" pos="6.8 0 0.050"  size="0.075 1.0 0.050" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 05: x=8.6  gap=1.8  h=0.25 -->
+    <geom name="hurdle_05" type="box" pos="8.6 0 0.125"  size="0.075 1.0 0.125" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 06: x=9.8  gap=1.2  h=0.12 -->
+    <geom name="hurdle_06" type="box" pos="9.8 0 0.060"  size="0.075 1.0 0.060" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 07: x=11.8 gap=2.0  h=0.18 -->
+    <geom name="hurdle_07" type="box" pos="11.8 0 0.090" size="0.075 1.0 0.090" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 08: x=13.4 gap=1.6  h=0.06 -->
+    <geom name="hurdle_08" type="box" pos="13.4 0 0.030" size="0.075 1.0 0.030" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 09: x=14.8 gap=1.4  h=0.22 -->
+    <geom name="hurdle_09" type="box" pos="14.8 0 0.110" size="0.075 1.0 0.110" material="obstacle" friction="2.0 0.01 0.02"/>
+    <!-- 10: x=16.7 gap=1.9  h=0.14 -->
+    <geom name="hurdle_10" type="box" pos="16.7 0 0.070" size="0.075 1.0 0.070" material="obstacle" friction="2.0 0.01 0.02"/>
+  </worldbody>
+</mujoco>

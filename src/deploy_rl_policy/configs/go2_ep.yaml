@@ -1,0 +1,56 @@
+# Config for Extreme Parkour base policy (P11-27 or similar).
+# Scales must match legged_gym/legged_gym/envs/base/legged_robot_config.py
+
+# Path to JIT model produced by save_jit_base.py
+# (relative to this script's directory)
+policy_path: "../../../resources/policies/ep_base_jit.pt"
+
+# Path to a RAW checkpoint (model_*.pt with model_state_dict + estimator_state_dict).
+# Used when use_sandbox_actor=True; bypasses JIT and instantiates Actor + Estimator
+# directly via ep_actor_sandbox.build_base_actor. Same checkpoint that save_jit_base.py
+# was given. No raw base checkpoint ships in this repo — point this at a teacher run
+# from the training repo (e.g. logs/extreme-parkour/teacher/model_3200.pt) and set
+# use_sandbox_actor: true.
+checkpoint_path: ""
+
+# Inference path:
+#   true  → load checkpoint_path via ep_actor_sandbox.build_base_actor (matches play.py)
+#   false → load the shipped JIT policy_path via torch.jit.load
+use_sandbox_actor: false
+
+# ── Observation scales ────────────────────────────────────────────────────────
+ang_vel_scale:  0.25      # base_ang_vel multiplier in obs
+dof_pos_scale:  1.0       # (dof_pos - default) multiplier
+dof_vel_scale:  0.05      # dof_vel multiplier
+
+# ── Action ────────────────────────────────────────────────────────────────────
+action_scale:   0.25      # target_pos = default + action * action_scale
+
+# ── Default joint angles (Unitree hardware order: FR, FL, RR, RL) ─────────────
+# Isaac URDF order: FL=0.1/0.8/-1.5, FR=-0.1/0.8/-1.5, RL=0.1/1.0/-1.5, RR=-0.1/1.0/-1.5
+# After reindex([3,4,5,0,1,2,9,10,11,6,7,8]): FR, FL, RR, RL
+default_angles: [-0.1, 0.8, -1.5,   # FR hip, thigh, calf
+                  0.1, 0.8, -1.5,   # FL hip, thigh, calf
+                 -0.1, 1.0, -1.5,   # RR hip, thigh, calf
+                  0.1, 1.0, -1.5]   # RL hip, thigh, calf
+
+# ── Default joint angles in Isaac URDF order (FL, FR, RL, RR) ────────────────
+# Used to compute target_dof_pos before converting to Unitree order.
+default_angles_isaac: [0.1, 0.8, -1.5,    # FL hip, thigh, calf
+                       -0.1, 0.8, -1.5,   # FR hip, thigh, calf
+                        0.1, 1.0, -1.5,   # RL hip, thigh, calf
+                       -0.1, 1.0, -1.5]   # RR hip, thigh, calf
+
+# ── Network / obs dimensions ──────────────────────────────────────────────────
+num_actions: 12
+num_obs: 753          # N_PROPRIO(53)+SCAN(132)+PRIV_EX(9)+PRIV_LAT(29)+HIST(530)
+num_proprio: 53
+history_len: 10
+
+# ── Command ───────────────────────────────────────────────────────────────────
+# Forward velocity command sent to the policy (obs[10]).
+# Change this at runtime to control speed.
+forward_vel_cmd: 0.0    # 0 = stand in place (the trained policy was trained
+                        # with bimodal cmd including 0). Set to 1.5 to walk
+                        # forward toward the wall. Override at launch with:
+                        # ros2 launch ... forward_vel_cmd:=1.5

@@ -1,0 +1,51 @@
+<mujoco model="go2 two-hurdle terrain 20cm 8m">
+  <!--
+    Simple sim2sim terrain with two identical hurdles on flat ground.
+
+    Assumption for the "8m distance" request: centre-to-centre spacing between
+    hurdle 1 and hurdle 2 is 8.0 m, matching the repository's usual wording.
+    The robot spawns at world (0, 0, 0.42) facing +x, so the hurdles are laid
+    out along world +x.
+
+    Geometry:
+      - hurdle 1 centre at x = 2.0 m
+      - hurdle 2 centre at x = 10.0 m
+      - hurdle dimensions = 0.15 m thick, 2.0 m wide, 0.20 m high
+  -->
+  <include file="go2.xml"/>
+
+  <option timestep="0.005"/>
+
+  <statistic center="5.5 0 0.5" extent="8.5"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="obstacle" rgba="0.55 0.55 0.6 1.0"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" group="4" size="0 0 0.05" type="plane" material="groundplane" friction="2.0 0.01 0.02"/>
+
+    <geom name="hurdle_01" type="box" group="4"
+          pos="2.0 0 0.10"
+          size="0.075 1.0 0.10"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+
+    <geom name="hurdle_02" type="box" group="4"
+          pos="10.0 0 0.10"
+          size="0.075 1.0 0.10"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+  </worldbody>
+</mujoco>

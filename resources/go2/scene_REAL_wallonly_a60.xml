@@ -1,0 +1,36 @@
+<mujoco model="go2 60deg lean plate + room wall, NO hurdle (wall-only twin of scene_REAL_h15_t20_w120_spawn160)">
+  <!-- Derived 2026-07-28 from scene_REAL_h15_t20_w120_spawn160.xml by deleting the
+       flyball_hurdle1 geom. Plate and room wall are byte-identical to that scene so
+       the two are directly comparable: the ONLY difference is the hurdle.
+       Plate: 1.10 m long, 60 deg from the floor (euler y = 30 deg), toe (bottom of
+       the climbing face) at x=3.425 z=0.000, face top at x=3.9750 z=0.9526,
+       rise 0.9526 m over 0.550 m run, 1.30 m wide.
+       Room wall: front face at x=3.9750, flush with the plate's top edge.
+       Spawn is x=0, so the approach run to the plate toe is 3.425 m of clear floor. -->
+  <include file="go2.xml"/>
+  <option timestep="0.005"/>
+  <statistic center="2.0 0 0.75" extent="5.0"/>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1280" offheight="720"/>
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="plate_face" rgba="0.80 0.70 0.45 1.0"/>
+    <material name="roomwall" rgba="0.62 0.62 0.66 1.0"/>
+    <material name="obstacle" rgba="0.55 0.55 0.6 1.0"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" type="plane" size="0 0 0.05" material="groundplane" friction="1.0 0.005 0.01"/>
+    <geom name="room_wall" type="box" pos="4.1500 0 1.0000" size="0.1750 3.0000 1.0000"
+          material="roomwall" friction="1.0 0.005 0.01" priority="2" condim="3" solref="0.01 1" solimp="0.95 0.99 0.001"/>
+    <geom name="lean_plate" type="box" pos="3.7433 0 0.4513" size="0.0500 0.6500 0.5500"
+          euler="0 0.5235987756 0" material="plate_face" friction="1.0 0.005 0.01"
+          priority="2" condim="3" solref="0.01 1" solimp="0.95 0.99 0.001"/>
+  </worldbody>
+</mujoco>

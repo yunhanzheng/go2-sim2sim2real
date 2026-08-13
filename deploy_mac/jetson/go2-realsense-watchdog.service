@@ -1,0 +1,18 @@
+# Companion to go2-realsense.service — probes actual frame flow and restarts
+# the driver when it wedges silently (alive process, advertised topics, no
+# frames — the state observed 2026-07-27). See realsense_watchdog.sh.
+
+[Unit]
+Description=Go2 RealSense frame-flow watchdog
+After=go2-realsense.service
+Wants=go2-realsense.service
+
+[Service]
+Type=simple
+User=unitree
+ExecStart=/home/unitree/go2/realsense_watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,60 @@
+# Editors / OS
+.vscode
+.history
+.idea/
+.DS_Store
+**/.DS_Store
+# Local assistant/editor configuration.
+/.claude/
+
+# Python
+**/__pycache__
+*.py[cod]
+*.egg-info/
+
+# colcon build products
+/build/
+/install/
+/log/
+
+# MuJoCo scratch
+MUJOCO_LOG.TXT
+
+# Vendored librealsense build for macOS (build artifact — rebuild locally).
+/librealsense-mac/
+
+# --- regenerable / log-shaped output ---------------------------------------
+# Anything a rerun or a rebuild recreates.
+*.log
+*.mcap
+*.db3
+*.bag
+**/rosbag2_*/
+*.orig
+*.rej
+/renders/
+/studies/
+/resources/go2/previews/
+trash/
+/archive/
+
+# Rendered video. The tracked demo clips under media/ are un-ignored below.
+*.mp4
+videos/
+!media/**/*.mp4
+
+# Deploy run output. The two committed .gitkeep/README files stay tracked so the
+# directory layout ships; actual runs do not.
+/run_logs/*
+!/run_logs/README.md
+!/run_logs/dryrun/
+!/run_logs/real/
+/run_logs/dryrun/*
+/run_logs/real/*
+!/run_logs/dryrun/.gitkeep
+!/run_logs/real/.gitkeep
+
+# Policy checkpoints. The released ones ship; every other run directory is ignored.
+/models/*
+!/models/L00-02-flat-baseline-delay-distillation-noised/
+!/models/S00-03-corridor-distillation/

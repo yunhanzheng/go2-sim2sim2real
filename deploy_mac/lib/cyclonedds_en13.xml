@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- CycloneDDS config binding ROS 2 / DDS to the Ethernet interface that reaches
+     the Go2 (192.168.123.x). On this Mac that interface is en13 (check with:
+     route get 192.168.123.161 | grep interface). env.sh sets CYCLONEDDS_URI
+     inline from $GO2_IFACE; this file is the standalone equivalent, usable via:
+       export CYCLONEDDS_URI="file://$PWD/deploy_mac/lib/cyclonedds_en13.xml" -->
+<CycloneDDS>
+    <Domain Id="any">
+        <General>
+            <Interfaces>
+                <NetworkInterface name="en13" priority="default" multicast="default" />
+            </Interfaces>
+        </General>
+    </Domain>
+</CycloneDDS>

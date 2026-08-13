@@ -1,0 +1,97 @@
+<mujoco model="go2 two-hurdle wall (smooth, train-matched)">
+  <!--
+    Training-matched layout (matches P11-41-distill_adv_encL_refined snapshot
+    at logs/extreme-parkour/P11-41-distill_adv_encL_refined/run_config.yaml):
+      flyball_single_hurdle_height_range  = (0.0, 0.1)  → 0.05 (mid)
+      flyball_single_hurdle_thickness     = 0.15
+      flyball_single_hurdle_width         = 2.0
+      flyball_second_hurdle_offset        = 2.0
+      flyball_runup_dist_range            = (5.0, 6.0)  → 5.5 (mid)
+      flyball_wall_angle_deg_range        = (20°, 60°)  → 30°
+      wall_thickness                      = 0.35
+      wall_height                         = 1.0
+      wall_base delta_z                   = 0.10
+    Only the approach-noise hfield from scene_2hurdles.xml is dropped, per
+    user request ("same terrain as training, except roughness").
+  -->
+  <include file="go2.xml"/>
+
+  <option timestep="0.005"/>
+
+  <statistic center="3.5 0 0.5" extent="4.0"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="obstacle"   rgba="0.55 0.55 0.6 1.0"/>
+    <material name="wall_face"  rgba="0.45 0.45 0.55 1.0"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="2.0 0.01 0.02"/>
+
+    <!-- Hurdle 1: thickness 0.15, full width 2.0, height 0.05 (mid of training
+         range 0–0.10). Placed at world x = 2.0 (matches spawn-to-hurdle1=2 m).
+         condim=6 + 5 mm margin: feet are condim=6 and swing fast (>1 m/s), and
+         the default 1 mm margin lets the foot clip into the 5 cm-tall box
+         within one 5 ms sim step. condim=6 is needed because MuJoCo otherwise
+         falls back to the box's default condim=1 (frictionless point contact)
+         when the foot lands on the top face. -->
+    <geom name="flyball_hurdle1" type="box"
+          pos="2.0 0 0.025"
+          size="0.075 1.0 0.025"
+          material="obstacle"
+          condim="6" margin="0.005"
+          friction="1.6 0.04 0.02"/>
+
+    <!-- Hurdle 2: same dims, world x = 4.0 (second_hurdle_offset = 2.0 m). -->
+    <geom name="flyball_hurdle2" type="box"
+          pos="4.0 0 0.025"
+          size="0.075 1.0 0.025"
+          material="obstacle"
+          condim="6" margin="0.005"
+          friction="1.6 0.04 0.02"/>
+
+    <!-- Wall lip -->
+    <geom name="flyball_wall_lip" type="box"
+          pos="6.675 0 0.05"
+          size="0.025 1.5 0.05"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+
+    <!-- Inclined wall ramp at θ = 30° (from vertical). Geometry:
+           wall_front_bottom = (6.65, 0, 0.10)
+           horizontal extent  = wall_height·tan θ = 0.577 m  → top_front_x = 7.227
+           slope length       = wall_height / cos θ = 1.155 m  → half = 0.578
+           outward_normal     = (cos θ, 0, −sin θ) = (0.866, 0, −0.5)
+           front_face_mid     = (6.939, 0, 0.600)
+           box centre         = front_face_mid + 0.175·outward_normal
+                              = (6.939 + 0.152, 0, 0.600 − 0.0875)
+                              = (7.091, 0, 0.513) -->
+    <geom name="flyball_wall_ramp" type="box"
+          pos="7.091 0 0.513"
+          size="0.175 1.5 0.578"
+          euler="0 0.52359878 0"
+          material="wall_face"
+          friction="2.0 0.01 0.02"/>
+
+    <!-- Wall back -->
+    <!-- Vertical wall behind the ramp. Spans x ∈ [top_front_x, top_front_x +
+         wall_thickness] = [7.227, 7.577], z ∈ [0, wall_height + delta_z] =
+         [0, 1.10]. -->
+    <geom name="flyball_wall_back" type="box"
+          pos="7.402 0 0.55"
+          size="0.175 1.5 0.55"
+          material="obstacle"
+          friction="2.0 0.01 0.02"/>
+  </worldbody>
+</mujoco>

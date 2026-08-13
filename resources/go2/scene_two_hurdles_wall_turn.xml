@@ -1,0 +1,35 @@
+<mujoco model="go2 two_hurdles_wall_turn">
+  <include file="go2.xml" />
+
+  <statistic center="0 5 0.5" extent="6" />
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="-90" elevation="-25" offwidth="1280" offheight="720" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 5 4" dir="0 0 -1" directional="true" />
+    <geom name="floor" group="4" size="0 0 0.05" type="plane" material="groundplane" />
+
+    <!-- difficulty=0.50  hurdle_h=0.20m  gap1=1.75m  gap2=2.15m  runup=4.50m  wall_angle=70.0deg  delta_z=0.000m -->
+    <geom name="hurdle1" type="box" group="4" pos="0 3.0000 0.1000" size="1.0000 0.0900 0.1000" rgba="0.85 0.55 0.20 1"/>
+    <geom name="hurdle2" type="box" group="4" pos="0 5.1500 0.1000" size="1.0000 0.0900 0.1000" rgba="0.85 0.55 0.20 1"/>
+    <geom name="wall_ramp" type="box" group="4" pos="0.0000 10.0629 0.4487" size="1.5000 0.5321 0.1500" quat="0.819152 0.573576 0 0" rgba="0.55 0.55 0.60 1" friction="1.0 0.005 0.0001"/>
+    <site name="g0" pos="0.000 2.310 0.020" size="0.07" rgba="0.20 0.20 0.20 0.9" group="3"/>
+    <site name="g1" pos="0.000 4.075 0.020" size="0.07" rgba="0.30 0.55 0.85 0.9" group="3"/>
+    <site name="g2" pos="0.000 6.040 0.020" size="0.07" rgba="0.30 0.55 0.85 0.9" group="3"/>
+    <site name="g3" pos="-0.400 8.740 0.020" size="0.07" rgba="0.95 0.75 0.10 0.9" group="3"/>
+    <site name="g4" pos="0.000 9.835 0.260" size="0.07" rgba="0.90 0.25 0.20 0.9" group="3"/>
+    <site name="g5" pos="0.300 8.740 0.020" size="0.07" rgba="0.15 0.75 0.40 0.9" group="3"/>
+    <site name="g6" pos="0.000 4.075 0.020" size="0.07" rgba="0.30 0.55 0.85 0.9" group="3"/>
+    <site name="g7" pos="0.000 2.310 0.020" size="0.07" rgba="0.20 0.20 0.20 0.9" group="3"/>
+  </worldbody>
+</mujoco>
