@@ -9,7 +9,8 @@ not shipped — the notes carry the analysed result.
 
 ## deploy/ — Standing deploy procedure
 
-- [`RUNBOOK_real_deploy.md`](deploy/RUNBOOK_real_deploy.md) — Go2 real-deploy runbook (fused stack)
+- [`RUNBOOK_real_deploy.md`](deploy/RUNBOOK_real_deploy.md) — Go2 真机部署手册（Mac / fused 栈）
+- [`RUNBOOK_real_deploy_ubuntu.md`](deploy/RUNBOOK_real_deploy_ubuntu.md) — Ubuntu（系统 ROS Humble）中文版
 
 ## analysis/ — Investigations and measurements
 

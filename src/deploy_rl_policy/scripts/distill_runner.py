@@ -447,6 +447,10 @@ def main():
                          "the robot ~1m before the first hurdle).")
     ap.add_argument("--init_y", type=float, default=0.0,
                     help="Override the initial base_y. Default 0 (scene centerline).")
+    ap.add_argument("--init_yaw_deg", type=float, default=0.0,
+                    help="Initial base yaw about +z in degrees. "
+                         "scene_two_hurdles_wall_turn.xml lays the course along world +y, "
+                         "so pass 90 so body +x faces the hurdles.")
     ap.add_argument("--init_z", type=float, default=0.42,
                     help="Override the initial base_z. Default 0.42 (matches Isaac training reset).")
     ap.add_argument("--pre_settle_seconds", type=float, default=0.0,
@@ -471,6 +475,15 @@ def main():
     # GLFW/OSMESA. Set this BEFORE importing mujoco.
     if (args.depth_mode == "render" or args.record is not None) and "MUJOCO_GL" not in os.environ:
         os.environ["MUJOCO_GL"] = "egl"
+
+    # A bare --record filename (no directory) files itself under the checkpoint's
+    # own folder: run_logs/sim2sim/<ckptdir>__<model>/<name>.mp4. An explicit
+    # path with a directory is always honoured as given.
+    if args.record is not None and args.record.parent == Path("."):
+        policy = f"{args.ckpt.parent.name}__{args.ckpt.stem}"
+        args.record = REPO_ROOT / "run_logs" / "sim2sim" / policy / args.record.name
+        args.record.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[video] bare --record name -> {args.record}")
 
     add_extreme_parkour_to_path(args.ep_root)
     # depth_backbone.py does `import torchvision` at top but never uses it for the
@@ -584,15 +597,20 @@ def main():
         print(f"[mj] front_depth_cam pitch = {args.cam_pitch_deg:.2f} deg down")
 
     # initialize qpos to a standing pose (DEFAULT_DOF_POLICY is in MJ order)
+    # Identity quat faces world +x. Scenes whose corridor is along +y (e.g.
+    # scene_two_hurdles_wall_turn) need --init_yaw_deg 90 so forward = +y.
     default_dof_mj = DEFAULT_DOF_POLICY
     d.qpos[:3] = [args.init_x, args.init_y, args.init_z]   # default (0,0,0.42) = Isaac init_state.pos
-    d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]                  # w, x, y, z (identity)
+    yaw0 = np.deg2rad(args.init_yaw_deg)
+    d.qpos[3:7] = [np.cos(yaw0 / 2), 0.0, 0.0, np.sin(yaw0 / 2)]  # w, x, y, z
     d.qpos[7:7 + 12] = default_dof_mj
     if args.init_jitter > 0.0:
         d.qpos[7:7 + 12] += np.random.uniform(-args.init_jitter, args.init_jitter, 12)
-        yaw0 = np.deg2rad(np.random.uniform(-1.0, 1.0) * args.init_jitter * 20.0)
+        yaw0 = yaw0 + np.deg2rad(np.random.uniform(-1.0, 1.0) * args.init_jitter * 20.0)
         d.qpos[3:7] = [np.cos(yaw0 / 2), 0.0, 0.0, np.sin(yaw0 / 2)]
         print(f"[init] jitter={args.init_jitter} seed={args.seed} yaw0={np.rad2deg(yaw0):+.2f} deg")
+    elif abs(args.init_yaw_deg) > 1e-6:
+        print(f"[init] yaw0={args.init_yaw_deg:+.2f} deg")
     d.qvel[:] = 0.0
     mujoco.mj_forward(m, d)
 
@@ -644,9 +662,18 @@ def main():
         print(f"[depth] source={depth_common.TRAIN_DEPTH_SOURCE_COMMIT} "
               f"stereo={'on' if stereo_enabled else 'off'} "
               f"noise_scale={args.depth_noise_scale:.2f}")
+    # Scene geoms (floor / hurdles / wall) live in MuJoCo geom group 4 so they
+    # collide for physics but stay hidden under the default MjvOption (groups
+    # 0–2 only). Depth rendering already enables group 4 via
+    # mujoco_depth_scene_option(); the third-person recorder must do the same
+    # or the MP4 shows a floating robot on empty space.
+    record_scene_option = None
     if args.record is not None:
         record_renderer = mujoco.Renderer(m, height=args.record_height,
                                           width=args.record_width)
+        record_scene_option = mujoco.MjvOption()
+        record_scene_option.geomgroup[:] = 1
+        record_scene_option.geomgroup[3] = 0  # collision capsules / sites off
 
     # ----- viewer
     viewer = None
@@ -1020,7 +1047,8 @@ def main():
 
         # -------- video frame ------------------------------------------
         if video_writer is not None and global_counter % record_every == 0:
-            record_renderer.update_scene(d, camera=args.record_camera)
+            record_renderer.update_scene(
+                d, camera=args.record_camera, scene_option=record_scene_option)
             if not args.clean_frame and not args.reference_crop_depth_pip:
                 # heading arrows: red = predicted delta_yaw (current step),
                 # orange = predicted delta_next_yaw (next step). Both rendered as
@@ -1090,7 +1118,8 @@ def main():
                     torque_log.append(torque.copy())
                     torque_time_log.append(float(d.time))
             if video_writer is not None and lay_tick % record_every == 0:
-                record_renderer.update_scene(d, camera=args.record_camera)
+                record_renderer.update_scene(
+                    d, camera=args.record_camera, scene_option=record_scene_option)
                 video_writer.append_data(record_renderer.render().copy())
         print(f"[laydown] ramped for 2.00s and held for {args.laydown_hold_s:.2f}s "
               f"at pos=({float(d.qpos[0]):+.3f},{float(d.qpos[1]):+.3f})")
