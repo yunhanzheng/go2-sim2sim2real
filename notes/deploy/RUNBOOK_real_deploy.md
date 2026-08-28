@@ -1,5 +1,8 @@
 # Go2 Real-Deploy Runbook (2026-07-27, fused stack)
 
+Mac / RoboStack path. Ubuntu with system ROS →
+[`../../deploy_mac/runbooks/real_run_runbook_ubuntu.md`](../../deploy_mac/runbooks/real_run_runbook_ubuntu.md).
+
 Checkpoint: **D22-nextgoal0.5-orient-4090/model_9000** (5/6 fused ROS, 18/20 standalone).
 
 ## 0. One-time (already done on this robot — verify only)

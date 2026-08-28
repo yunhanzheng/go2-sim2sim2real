@@ -58,7 +58,7 @@
     <!-- Hurdle: thickness 0.18, width 2.0, height 0.125, at world x = 2.1 -->
     <geom name="flyball_hurdle" type="box"
           pos="2.1 0 0.0625"
-          size="0.09 1.0 0.0625"
+          size="0.01 1.0 0.0625"
           material="obstacle"
           friction="1.0 0.005 0.01"/>
 

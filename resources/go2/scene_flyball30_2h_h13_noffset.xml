@@ -8,6 +8,8 @@
         horizontal run = H/tan30 = 1.732 m, slope length = H/sin30 = 2.000 m.
       Wall front-bottom kept at (6.025, 0, 0); top at (7.757, 0, 1.0).
     Hurdles at world x 2.1 and 4.1, now 0.13 m tall.
+    Hurdle thickness along +x halved from 0.18 m full (size x 0.09) to 0.09 m
+    full (size x 0.045); lateral width and height unchanged.
   -->
   <include file="go2.xml"/>
   <option timestep="0.005"/>
@@ -28,13 +30,13 @@
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.01"/>
-    <!-- Hurdle 1: 0.13 m tall, world x 2.1 -->
+    <!-- Hurdle 1: 0.13 m tall, 0.09 m thick along +x, world x 2.1 -->
     <geom name="flyball_hurdle" type="box"
-          pos="2.1 0 0.065" size="0.09 1.0 0.065"
+          pos="2.1 0 0.065" size="0.01 1.0 0.065"
           material="obstacle" friction="1.0 0.005 0.01"/>
-    <!-- Hurdle 2: 0.13 m tall, world x 4.1 (2.0 m past hurdle 1) -->
+    <!-- Hurdle 2: 0.13 m tall, 0.09 m thick along +x, world x 4.1 -->
     <geom name="flyball_hurdle2" type="box"
-          pos="4.1 0 0.065" size="0.09 1.0 0.065"
+          pos="4.1 0 0.065" size="0.01 1.0 0.065"
           material="obstacle" friction="1.0 0.005 0.01"/>
     <!-- 30 deg wall, no offset, runup-matched: ramp face front-bottom at
          (6.025, 0, 0), top at (7.757, 0, 1.0). -->

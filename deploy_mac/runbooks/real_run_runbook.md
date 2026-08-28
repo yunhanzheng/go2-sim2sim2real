@@ -1,5 +1,8 @@
 # Runbook — REAL run on the Go2 (motors live, `/lowcmd`)
 
+Mac / RoboStack path. Ubuntu with system ROS →
+[`real_run_runbook_ubuntu.md`](real_run_runbook_ubuntu.md).
+
 This is the **real** deployment: `low_level_ctrl` drives `/lowcmd` and **the robot
 moves**. Unlike the dry-run (`run_dryrun_remote.sh`, no `/lowcmd`), every step here
 can move the legs. Read §0 and §6 before powering anything.

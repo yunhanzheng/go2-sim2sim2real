@@ -31,11 +31,11 @@
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.01"/>
     <!-- Hurdle 1: 0.10 m tall, world x 2.1 -->
     <geom name="flyball_hurdle" type="box"
-          pos="2.1 0 0.05" size="0.09 1.0 0.05"
+          pos="2.1 0 0.05" size="0.01 1.0 0.05"
           material="obstacle" friction="1.0 0.005 0.01"/>
     <!-- Hurdle 2: 0.10 m tall, world x 4.1 (2.0 m past hurdle 1) -->
     <geom name="flyball_hurdle2" type="box"
-          pos="4.1 0 0.05" size="0.09 1.0 0.05"
+          pos="4.1 0 0.05" size="0.01 1.0 0.05"
           material="obstacle" friction="1.0 0.005 0.01"/>
     <!-- 45 deg wall, no offset, runup-matched: ramp face front-bottom at
          (6.025, 0, 0), top at (7.025, 0, 1.0). -->

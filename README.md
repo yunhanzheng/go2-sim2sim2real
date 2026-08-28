@@ -82,9 +82,9 @@ stand-still**, so verify at 1.3, not at 0.5. Details in
 
 ```bash
 ros2 launch deploy_rl_policy distill.launch.py is_simulation:=true \
-  use_keyboard:=true \
-  ckpt:=models/student/model_10000.pt \
-  scene_xml:=resources/go2/scene_flyball30_2h_h13_noffset.xml
+  use_keyboard:=false \
+  ckpt:=models/D31-fovscan_maxpool_fullforce_fx_2m-smoothfloor-l40s/model_9000.pt \
+  scene_xml:=resources/go2/scene_flyball70.xml
 ```
 
 `depth_mode:=render` renders `front_depth_cam` from the live qpos; `depth_mode:=zeros`
@@ -97,7 +97,7 @@ Orphaned processes between launches: `./deploy_mac/kill_ros.sh`.
 **Turn the Go2's sport mode off first.**
 
 ```bash
-ros2 launch deploy_rl_policy distill.launch.py is_simulation:=false ckpt:=<ckpt>
+ros2 launch deploy_rl_policy distill.launch.py is_simulation:=false ckpt:=models/D31-fovscan_maxpool_fullforce_fx_2m-smoothfloor-l40s/model_9000.pt
 ```
 
 Gamepad: **B** lay→stand, hold **LB+RB** engage, **A** lay down. Real runs default
@@ -105,8 +105,10 @@ Gamepad: **B** lay→stand, hold **LB+RB** engage, **A** lay down. Real runs def
 hardware reads every foot as always-in-contact, so there is no gait phase.
 
 There is no watchdog, command timeout or stale-latent expiry; the e-stop is a joystick
-combo. Bring up hoisted or tethered — see
-`[deploy_mac/runbooks/real_run_runbook.md](deploy_mac/runbooks/real_run_runbook.md)`.
+combo. Bring up hoisted or tethered — full procedures:
+
+- Ubuntu (system ROS): [`deploy_mac/runbooks/real_run_runbook_ubuntu.md`](deploy_mac/runbooks/real_run_runbook_ubuntu.md)
+- macOS (RoboStack): [`deploy_mac/runbooks/real_run_runbook.md`](deploy_mac/runbooks/real_run_runbook.md)
 
 ## Node stack
 
