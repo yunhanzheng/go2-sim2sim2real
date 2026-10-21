@@ -45,10 +45,13 @@ Go2 ──DDS rt/lowstate──▶ rl_distill_policy.py (rclpy, native on Mac)
 ## Network (one-time)
 
 Mac on the robot's subnet, static IP:
-- IP `192.168.123.222`, mask `255.255.255.0`, **router blank** (leaving a gateway here
+- IP `192.168.123.99`, mask `255.255.255.0`, **router blank** (leaving a gateway here
   hijacks the default route and kills internet — keep it empty).
 - Robot control board: `192.168.123.161`. Verify: `ping 192.168.123.161`.
-- Find the interface name: `route get 192.168.123.161 | grep interface` → here **en13**.
+- Onboard Jetson: `192.168.123.18` on the Orin NX image (`.222` on the older Foxy image).
+  Verify: `ping 192.168.123.18`.
+- Find the interface name: `route get 192.168.123.161 | grep interface` → here **en13**
+  (on an Ubuntu host: `ip route get 192.168.123.18` → `dev eno1`).
 
 ## Environment setup (one-time)
 
@@ -193,15 +196,16 @@ robot accepts `/lowcmd` (motors respond when hoisted) before any free run.
 
 ## Depth camera (RealSense D435i on the Jetson, over DDS)
 
-The RealSense is plugged into the robot's **Jetson** (`192.168.123.222`), not the Mac — so the
-Jetson runs `realsense2_camera` and depth reaches the Mac **over DDS**. No librealsense/pyrealsense2
-on macOS. Verified 2026-06-15: `/camera/depth/image_rect_raw` @15 Hz on the Mac → `depth_camera_node`
-→ `/rl/depth_image` @15 Hz.
+The RealSense is plugged into the robot's **Jetson** (currently `192.168.123.18` on the
+Orin NX / JetPack 6 image; older Foxy images answer on `.222`), not the Mac — so the
+Jetson runs `realsense2_camera` and depth reaches the Mac **over DDS**. No
+librealsense/pyrealsense2 on macOS. Verified 2026-10-20 on the Orin NX:
+`/camera/depth/image_rect_raw` at **59.9 Hz** across DDS, 480x270x60.
 
-Topology: Jetson `.222` (cyclonedds, domain 0) ── robot board `.161` ── Mac `.99`.
-⚠️ Mac must NOT use `.222` (Jetson's IP — an earlier collision silently broke Mac↔Jetson DDS).
+Topology: Jetson `.18` (cyclonedds, domain 0) ── robot board `.161` ── Mac `.99`.
+⚠️ Mac must NOT use `.18` (Jetson's IP — an earlier collision silently broke Mac↔Jetson DDS).
 
-### One-time Jetson setup (it had no internet, a ~2 yr-wrong clock, and an expired ROS key)
+### One-time Jetson setup — Foxy image (it had no internet, a ~2 yr-wrong clock, and an expired ROS key)
 ```bash
 # (a) internet via the Mac (NAT) — on the MAC, in Terminal.app (needs sudo password):
 sudo sysctl -w net.inet.ip.forwarding=1
@@ -215,30 +219,60 @@ sudo date -u -s "<current UTC, e.g. 2026-06-15 12:35:00>"
 # (c) current ROS key + OFFICIAL repo (tuna mirror was stale + expired-key):
 sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 echo "deb [arch=arm64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu focal main" | sudo tee /etc/apt/sources.list.d/ros2-official.list
-sudo apt update && sudo apt install -y ros-foxy-realsense2-camera
+sudo apt update && sudo apt install -y ros-foxy-realsense2-camera   # Foxy image only;
+# on JetPack 6 / Humble the package is `ros-humble-realsense2-camera` (already installed on
+# the current robot — see deploy_mac/jetson/INSTALL.md)
 # undo Mac NAT later:  sudo pfctl -d ;  sudo sysctl -w net.inet.ip.forwarding=0
 ```
 
 ### Run the camera
+
+On the **Humble / JetPack 6** image the driver is a systemd service. Do not launch it by
+hand — two `rs_launch` processes fight over `/dev/video0` and both crash-loop on
+`resource busy`:
+
 ```bash
-# Jetson (shell with RMW_IMPLEMENTATION=rmw_cyclonedds_cpp, ROS_DOMAIN_ID=0, the unitree cyclonedds.xml):
+ssh unitree@192.168.123.18 sudo systemctl restart go2-realsense-humble
+```
+
+The unit pins the profile and flattens the namespace, so the topic is exactly
+`/camera/depth/image_rect_raw` at **480x270x60**. See `jetson/INSTALL.md` for why that
+profile, and for the three 4.58 parameter traps (`depth_module.profile` →
+`depth_profile`, empty `camera_namespace` → `/`, `laser_power` 350 → 360).
+
+Manual equivalent, debugging only:
+
+```bash
 ros2 launch realsense2_camera rs_launch.py \
   enable_color:=false enable_infra1:=false enable_infra2:=false \
-  --ros-args -p depth_module.emitter_enabled:=1 -p depth_module.laser_power:=350.0
-# Mac — preprocess to the policy's 58x87:
+  depth_module.depth_profile:=480x270x60 depth_module.infra_profile:=480x270x60 \
+  camera_namespace:=/
+# laser_power / emitter_enabled are NOT launch args on 4.58 — set them after the node is up:
+ros2 param set /camera depth_module.emitter_enabled 1
+ros2 param set /camera depth_module.laser_power 360.0     # 350 is illegal: step = 30
+```
+
+Then on the deployment host, preprocess to the policy's 58x87:
+
+```bash
 python src/deploy_rl_policy/scripts/depth_camera_node.py --ros-args -p input_topic:=/camera/depth/image_rect_raw
-# Mac — encode (real depth latent instead of fake_depth_latent):
+# encode the real depth latent instead of fake_depth_latent:
 python src/deploy_rl_policy/scripts/depth_encoder_node.py --ckpt <L00-02> --ep_root <ep> --contact_threshold 20,20,20,20 --enforce_latency_s 0.0
 ```
-Note the topic is `image_rect_raw` (not `image_raw`) → pass it via `--input_topic`. USB-2 on the
-Jetson caps depth at 640×480×15.
+Note the topic is `image_rect_raw` (not `image_raw`) → pass it via `--input_topic`. 480x270x60 is
+picked for FOV and latency, not bandwidth: it frames the trained 87x56.49 with zero padding
+and keeps depth age inside the trained 80–100 ms band. On the dock's Type-C port the camera is
+SuperSpeed (`Device USB type: 3.2`, Bus 002); on a USB-A port it is a 480M link, where 848x480
+would cap at 10 fps.
 
-`depth_camera_node` is **faithful to training**: it FOV-matches the 640×480 frame (center-crop to
-the render's hFOV 87°/vFOV 56.49°) → resizes to the **60×106** sim-render resolution → then
+`depth_camera_node` is **faithful to training**: it auto-reads `camera_info`, derives the
+stream's true FOV, and tan-space matches it to the render's hFOV 87°/vFOV 56.49° (crop when
+wider, pad with `DEPTH_FAR` when narrower) → resizes to the **60×106** sim-render resolution → then
 `normalize_depth` applies training's exact crop `[:-2,4:-4]` + resize to **58×87**, and it
 **decimates to ~10 Hz** to match the recurrent encoder's training cadence. A naive 640×480→58×87
-resize (the old behavior) was off-distribution (no crop, wrong aspect). Params if your unit/FOV
-differs: `cam_hfov_deg`, `cam_vfov_deg`, `target_hz`.
+resize (the old behavior) was off-distribution (no crop, wrong aspect). Params: `auto_fov`
+(default true; falls back to `cam_hfov_deg`/`cam_vfov_deg` when `camera_info` never arrives) and
+`target_hz`.
 
 The real wrapper has an opt-in lightweight timing mode:
 

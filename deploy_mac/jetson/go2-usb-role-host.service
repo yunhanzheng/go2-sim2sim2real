@@ -1,0 +1,11 @@
+[Unit]
+Description=Switch dock USB3.2 Type-C port to host role
+Before=go2-realsense-humble.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo host > /sys/class/usb_role/usb2-0-role-switch/role'
+
+[Install]
+WantedBy=multi-user.target

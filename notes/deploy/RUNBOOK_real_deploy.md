@@ -7,10 +7,11 @@ Checkpoint: **D22-nextgoal0.5-orient-4090/model_9000** (5/6 fused ROS, 18/20 sta
 
 ## 0. One-time (already done on this robot — verify only)
 
-- Jetson services installed: `go2-realsense.service` + watchdog (`deploy_mac/jetson/INSTALL.md`)
-- Passwordless helpers: `/etc/sudoers.d/go2-realsense-watchdog`, `/etc/sudoers.d/go2-clock-sync`, `/usr/local/sbin/go2_set_clock.py`
+- Jetson services installed: `go2-realsense-humble.service` + `go2-realsense-humble-watchdog.service` (`deploy_mac/jetson/INSTALL.md`)
+- Passwordless helpers: `/etc/sudoers.d/go2-realsense-watchdog-humble`, `/etc/sudoers.d/go2-clock-sync`, `/usr/local/sbin/go2_set_clock.py`
 - chrony disabled on the Jetson
-- SSH key on the Jetson (`ssh unitree@192.168.123.222 echo ok` — no password)
+- SSH to the Jetson at **`192.168.123.18`** (`.222` in earlier notes is stale):
+  `ssh unitree@192.168.123.18 echo ok`
 
 ## 1. Physical
 
@@ -48,11 +49,13 @@ the Go2 — override only if the Mac uses a different interface: `GO2_IFACE=enX 
 Then verify:
 
 ```bash
-ros2 topic hz /camera/depth/image_rect_raw    # ~30 Hz (Jetson service auto-starts)
+ros2 topic hz /camera/depth/image_rect_raw    # ~60 Hz @ 480x270x60 (Jetson service auto-starts)
 ros2 topic hz /lowstate                       # ~500 Hz
 ```
 
-Camera silent → `ssh unitree@192.168.123.222 sudo -n systemctl restart go2-realsense.service`, wait 15 s.
+Camera silent → `ssh unitree@192.168.123.18 sudo -n systemctl restart go2-realsense-humble.service`,
+wait 20 s (the unit reads `activating` while `ExecStartPost` re-applies `laser_power`;
+depth is usually already streaming in that state).
 
 ## 4. Dry-run first (no /lowcmd, robot cannot move)
 

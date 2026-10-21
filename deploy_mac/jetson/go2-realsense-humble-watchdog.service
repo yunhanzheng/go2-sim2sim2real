@@ -1,0 +1,30 @@
+# Companion to go2-realsense-humble.service: catches the WEDGED state (node
+# alive, topics advertised, zero frames delivered) that Restart= can never see
+# because the process never exits. Observed on the Foxy image 2026-07-27;
+# assume it exists on this one too.
+#
+# Requires the scoped sudoers line, otherwise every restart attempt fails
+# silently in the journal:
+#   echo 'unitree ALL=(root) NOPASSWD: /bin/systemctl restart go2-realsense-humble.service' \
+#     | sudo tee /etc/sudoers.d/go2-realsense-watchdog-humble
+#
+# Runs the script through /bin/bash so it does not need +x after scp.
+# StartLimitIntervalSec=0: the watchdog itself must never give up — a wedged
+# camera can need several restarts in a row before it comes back.
+
+[Unit]
+Description=Go2 RealSense wedge watchdog (restarts the driver when it delivers zero frames)
+After=go2-realsense-humble.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=unitree
+Environment=HOME=/home/unitree
+Environment=ROS_DOMAIN_ID=0
+ExecStart=/bin/bash /home/unitree/go2/realsense_watchdog_humble.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

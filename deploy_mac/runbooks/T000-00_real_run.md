@@ -4,9 +4,10 @@ Disable sport mode (lay robot down with factory remote first):
 
 PYTHONPATH=$HOME/go2/unitree_sdk2_python $HOME/go2/venv/bin/python $HOME/go2/disable_sport.py
 
-ssh unitree@192.168.123.222
+ssh unitree@192.168.123.18
 
-ros2 launch realsense2_camera rs_launch.py enable_color:=false enable_infra1:=false enable_infra2:=false
+systemctl status go2-realsense-humble --no-pager -l | head -5
+# expected: active (running); the unit auto-starts on boot — do NOT launch rs_launch by hand
 
 ## Launch (full policy stack, remote-driven)
 

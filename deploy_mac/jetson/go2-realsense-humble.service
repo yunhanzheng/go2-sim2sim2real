@@ -1,0 +1,55 @@
+# systemd unit for the Go2 Orin NX RealSense depth driver (JetPack 6 / Ubuntu
+# 22.04 / ROS 2 Humble). Foxy-era counterpart: go2-realsense.service, kept for
+# the older Jetson image — do NOT install both.
+#
+# Every deviation from the Foxy unit is a failure that was actually hit on the
+# robot (2026-10-20), not a guess:
+#
+#   - setup_go2.sh is the single source of the DDS environment
+#     (RMW=rmw_cyclonedds_cpp + CYCLONEDDS_URI bound to enP8p1s0). The unit does
+#     not re-declare it, so the service sees exactly what an interactive shell
+#     sees — the one configuration already proven to talk to the Mac.
+#   - depth_module.depth_profile, NOT depth_module.profile: 4.58 silently drops
+#     the old alias and falls back to 640x480x15. That default is doubly wrong —
+#     640x480 depth FOV is 78.8 x 63.3 vs the trained 87 x 56.49 (13% of every
+#     frame padded with DEPTH_FAR), and 15 fps misses the 80-100 ms depth-age
+#     band (60 fps gives 80.0-96.7 ms). Journal check on start:
+#       "Open profile: ... Width: 480, Height: 270, FPS: 60"
+#   - camera_namespace:=/ flattens the node to /camera so depth lands on
+#     /camera/depth/image_rect_raw — the topic run_real_remote.sh and the
+#     viewer scripts hardcode. The 4.58 default is the double namespace
+#     /camera/camera/..., and an empty camera_namespace:= is rejected outright
+#     ("malformed launch argument").
+#   - laser_power is 360 here, not the 350 of the Foxy unit: the ROS descriptor
+#     declares step=30 over [0, 360], so 350 is rejected with "doesn't comply
+#     with floating point range". The Foxy driver had no step constraint.
+#   - laser_power / emitter_enabled are NOT launch args on this driver (silently
+#     ignored, param reads back 150) -> set post-start with retries, and the
+#     script ALWAYS exits 0: a rejected param must never put the unit into a
+#     restart storm while the camera is actually streaming fine.
+#   - StartLimit* live in [Unit], not [Service]. The Foxy unit has them in
+#     [Service], where systemd ignores them.
+#   - The camera is on a 480M port ("Device USB type: 2.1 ... Reduced
+#     performance is expected" in the journal is expected, not an error). USB 2
+#     is why 480x270x60 and not 848x480x60.
+
+[Unit]
+Description=Go2 RealSense depth driver (480x270x60 -> /camera/depth/image_rect_raw)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=unitree
+Environment=HOME=/home/unitree
+Environment=ROS_DOMAIN_ID=0
+ExecStart=/bin/bash -c 'source /home/unitree/unitree_ros2/setup_go2.sh && exec ros2 launch realsense2_camera rs_launch.py enable_color:=false enable_infra1:=false enable_infra2:=false depth_module.depth_profile:=480x270x60 depth_module.infra_profile:=480x270x60 camera_namespace:=/'
+ExecStartPost=/bin/bash -c 'source /home/unitree/unitree_ros2/setup_go2.sh; n=0; while [ "$$n" -lt 20 ]; do sleep 3; ros2 param set /camera depth_module.emitter_enabled 1 >/dev/null 2>&1 && ros2 param set /camera depth_module.laser_power 360.0 >/dev/null 2>&1 && exit 0; n=$$((n+1)); done; echo "WARN: emitter/laser_power not applied (driver may still be streaming)" >&2; exit 0'
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
