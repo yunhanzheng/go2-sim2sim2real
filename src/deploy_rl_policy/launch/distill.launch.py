@@ -77,6 +77,7 @@ def generate_launch_description():
     binary_vel = LaunchConfiguration("binary_vel")
     vel_deadzone = LaunchConfiguration("vel_deadzone")
     use_keyboard = LaunchConfiguration("use_keyboard")
+    use_joy = LaunchConfiguration("use_joy")
     kbd_speed = LaunchConfiguration("kbd_speed")
     contact_threshold = LaunchConfiguration("contact_threshold")
     env_class_eq_17 = LaunchConfiguration("env_class_eq_17")
@@ -135,6 +136,12 @@ def generate_launch_description():
                                           "0 = proportional stick control."),
         DeclareLaunchArgument("vel_deadzone", default_value="0.2"),
         DeclareLaunchArgument("use_keyboard", default_value="false"),
+        DeclareLaunchArgument(
+            "use_joy", default_value="true",
+            description="Start joy_node (the physical pad on /dev/input/js*). Set "
+                        "to false whenever /joy is fed by deploy_mac/run/"
+                        "wireless_to_joy.py — two /joy publishers flap "
+                        "/policy_engaged and the robot collapses on engage."),
         DeclareLaunchArgument("kbd_speed", default_value="1.0",
                               description="keyboard stick magnitude in [0,1] when "
                                           "use_keyboard:=true (scales top speed: "
@@ -241,7 +248,15 @@ def generate_launch_description():
     is_sim_cond = IfCondition(is_simulation)
     is_real_cond = UnlessCondition(is_simulation)
     use_kbd_cond = IfCondition(use_keyboard)
-    use_joy_cond = UnlessCondition(use_keyboard)
+    # joy_node opens /dev/input/js* — the physical pad. It must NOT run when
+    # /joy is fed by an external bridge (deploy_mac/run/wireless_to_joy.py,
+    # the Unitree remote): two publishers with contradictory button states
+    # flap /policy_engaged at the message rate under momentary_engage, and
+    # every engage edge both resets the encoder GRU and re-arms the "settle to
+    # standing" ramp, which then follows the sagging joints down instead of
+    # driving to the stand pose. Pass use_joy:=false in that setup.
+    use_joy_cond = IfCondition(PythonExpression(
+        ["'", use_joy, "' == 'true' and '", use_keyboard, "' == 'false'"]))
     viewer_cond = IfCondition(PythonExpression(
         ["'", is_simulation, "' == 'false' and '", launch_viewer, "' == 'true'"]))
 

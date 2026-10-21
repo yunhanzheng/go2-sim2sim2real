@@ -26,7 +26,8 @@ Jetson RealSense one-time install (only if the service is not already installed)
 - **System Python 3.10** with Torch + MuJoCo — do **not** run ROS from the `parkour`
   conda env (Python 3.8); see §9
 - Wired NIC to the Go2 identified (often `eno1`)
-- Jetson `go2-realsense.service` active and enabled (`ssh unitree@192.168.123.222`)
+- Jetson `go2-realsense-humble.service` + `go2-realsense-humble-watchdog.service`
+  active and enabled (`ssh unitree@192.168.123.18`)
 
 ---
 
@@ -39,12 +40,12 @@ Jetson RealSense one-time install (only if the service is not already installed)
 | Device | Typical IP |
 | --- | --- |
 | Go2 motion controller | `192.168.123.161` |
-| Onboard Jetson (camera) | `192.168.123.222` (sometimes `.18`) |
-| Ubuntu host | e.g. `192.168.123.99` — **not** `.161`; **do not** use Jetson's `.222` |
+| Onboard Jetson (camera) | `192.168.123.18` (`.222` belongs to the old Foxy image; it does not answer) |
+| Ubuntu host | e.g. `192.168.123.99` — **not** `.161`; **do not** use Jetson's `.18` |
 
 ```bash
 ping -c 3 192.168.123.161
-ping -c 3 192.168.123.222
+ping -c 3 192.168.123.18
 ip -br addr | grep 192.168.123    # note NIC name, e.g. eno1
 ```
 
@@ -86,13 +87,21 @@ Verify:
 
 ```bash
 ros2 topic hz /lowstate                          # ~500 Hz
-ros2 topic hz /camera/depth/image_rect_raw       # Jetson depth: often ~15–60 Hz
+ros2 topic hz /camera/depth/image_rect_raw       # Jetson depth: ~60 Hz (480x270x60)
 ```
 
-No depth → on the Jetson: `sudo systemctl restart go2-realsense.service`, wait ~15 s.
-If the topic uses a nested namespace, `ros2 topic list | grep image_rect_raw` and
-override with `depth_input_topic:=...` at launch. Do **not** start a second `rs_launch`
-while the service is already running.
+No depth → on the Jetson: `sudo systemctl restart go2-realsense-humble.service`, wait
+~20 s. `ExecStartPost` re-applies `laser_power`/`emitter_enabled` on every start and the
+unit stays `activating` until it succeeds (or its 60 s retry budget runs out) — depth is
+often already streaming in that state. Do **not** start a second `rs_launch` while the
+service is running: both fight over `/dev/video0` and crash-loop on `resource busy`.
+
+The service flattens the node namespace to `/camera`, so the topic is exactly
+`/camera/depth/image_rect_raw`. Launching the driver by hand instead gives the 4.x
+double namespace `/camera/camera/depth/image_rect_raw`; confirm with
+`ros2 topic list | grep image_rect_raw`. Two different knob names feed it:
+`depth_input_topic:=...` under `distill.launch.py` (a launch arg), or
+`--ros-args -p input_topic:=...` when running `depth_camera_node.py` directly.
 
 ---
 
@@ -124,7 +133,7 @@ works on `/rl/depth_image`.
 ros2 launch deploy_rl_policy distill.launch.py is_simulation:=true \
   use_keyboard:=false \
   ckpt:=models/D31-fovscan_maxpool_fullforce_fx_2m-smoothfloor-l40s/model_9000.pt \
-  scene_xml:=resources/go2/scene_flyball70.xml
+  scene_xml:=resources/go2/scene_flyball45_2h_h10_noffset.xml
 ```
 
 Do **not** engage on hardware until hoisted.
@@ -168,6 +177,7 @@ publishing. Start `wireless_to_joy.py` in a separate terminal if using the Unitr
 
 ```bash
 ros2 launch deploy_rl_policy distill.launch.py is_simulation:=false \
+  use_joy:=false \
   ckpt:=models/D31-fovscan_maxpool_fullforce_fx_2m-smoothfloor-l40s/model_9000.pt \
   env_class_eq_17:=0 \
   action_delay:=1 \
@@ -176,6 +186,28 @@ ros2 launch deploy_rl_policy distill.launch.py is_simulation:=false \
   policy_kp:=35.0 \
   policy_kd:=0.6
 ```
+
+This exact command is the field-verified configuration on the Go2 remote (2026-10-20:
+B stands, hold L1+R1 and the policy runs without the engage flapping).
+
+`use_joy` picks **which** `/joy` source runs, and the rule is that exactly one must
+exist:
+
+| Input device | Command | `/joy` publisher |
+| --- | --- | --- |
+| Physical pad (Xbox, LB+RB) | default `use_joy:=true` | `joy_node` |
+| Unitree remote | `use_joy:=false` + run `wireless_to_joy.py` | `wireless_to_joy` |
+| Keyboard | `use_keyboard:=true` | `keyboard_to_joy` |
+
+If two of them publish at once they carry contradictory button states: the one you hold
+says L1+R1 down, the idle one says all buttons up. Under the real-mode default
+`momentary_engage:=true` that flips `/policy_engaged` off and on at the message rate
+(~15-30 Hz). Each engage edge resets the encoder GRU and the actor buffer, and each
+release re-arms the settle-to-stand ramp, whose first tick captures
+`q_init_ = motor[i].q` — so the commanded target follows the sagging joints down instead
+of driving to the stand pose. The observable symptom is "hold L1+R1 and the robot
+crouches", and the `/rl` log shows dozens of `/policy_engaged=True/False` pairs per
+second. Check with `ros2 topic info /joy` → `Publisher count: 1`.
 
 Flat baseline (L00-02) example:
 
@@ -209,7 +241,9 @@ bash "$REPO/deploy_mac/kill_ros.sh"
 | `No module named 'rclpy._rclpy_pybind11'` | Exit conda; `export PATH=/usr/bin:$PATH` |
 | `depth_viewer_node` → `No executable found` | `python3 src/deploy_rl_policy/scripts/depth_viewer_node.py` |
 | `wireless_to_joy` heartbeat stuck | Wake the Unitree remote |
-| No `/camera/depth/...` | Restart Jetson `go2-realsense`; check IP clash with `.222`, `GO2_IFACE`, nested topic name |
+| Crouches / collapses **on engage**, `/rl` log shows `engaged=True/False` flapping | Two `/joy` publishers: relaunch with `use_joy:=false`, and check `ros2 topic info /joy` is `Publisher count: 1` |
+| Two `depth_camera_node` / two `distill_fused_policy` | Leftover stack: `ps -eo pid,args \| grep -E "depth_camera_node\|distill_fused_policy"`, kill the old PID; `/rl/target_pos` must show `Publisher count: 1` |
+| No `/camera/depth/...` | `ssh unitree@192.168.123.18 sudo systemctl restart go2-realsense-humble`; then check `is-active`, an IP clash with `.18`, `GO2_IFACE`, and whether the topic picked up a nested namespace |
 | Wrong checkpoint flags | Bad `env_class_eq_17` / contact / yaw **does not error** — the robot just walks badly |
 
 **Do not:**
@@ -218,5 +252,7 @@ bash "$REPO/deploy_mac/kill_ros.sh"
 - Send `/lowcmd` while sport mode is on
 - Use `GO2_IFACE=lo` on the real robot
 - Run ROS launch from the `parkour` (py3.8) env
+- Run `joy_node` and `wireless_to_joy.py` at the same time (two `/joy` publishers →
+  `/policy_engaged` flaps → the robot crouches the moment you engage)
 - Skip `kill_ros.sh` between sessions
-- Set the Ubuntu host IP to the Jetson's `.222`
+- Set the Ubuntu host IP to the Jetson's `.18`
