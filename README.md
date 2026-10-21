@@ -82,8 +82,8 @@ stand-still**, so verify at 1.3, not at 0.5. Details in
 
 ```bash
 ros2 launch deploy_rl_policy distill.launch.py is_simulation:=true \
-  use_keyboard:=false \
-  ckpt:=models/D31-fovscan_maxpool_fullforce_fx_2m-smoothfloor-l40s/model_9000.pt \
+  use_keyboard:=true \
+  ckpt:=models/D31-fovscan_maxpool_fullforce_fx_2m-smoothfloor-l40s/model_7000.pt \
   scene_xml:=resources/go2/scene_flyball70.xml
 ```
 
