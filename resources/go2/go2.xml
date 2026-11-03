@@ -123,10 +123,20 @@
            one seed veers 1.25 m laterally. That is exactly the 2026-07-27
            real-run symptom, and it is why sim2sim kept passing: it rendered
            a camera geometry the robot does not have.
-           ACTION: physically re-tilt the mount to the trained 20° (restores
-           6/6). Keep this XML at the MEASURED 7.6° until the hardware is
-           re-tilted, so sim2sim stays an honest predictor of the robot; set
-           it back to 0.34202/0.93969 the moment the mount changes. -->
+           RESOLVED 2026-10-30: the bracket was physically re-tilted and
+           re-measured with deploy_mac/camera/check_camera_pitch.py (same
+           floor-plane method, 60 frames, standing robot): 19.3 deg, reproducible
+           to 0.02 deg across two runs (19.31 / 19.33), camera 0.405 m above the
+           floor, IMU pitch -0.5 deg. That is the
+           trained nominal 20 deg within 0.7 deg, and inside depth.angle
+           [15, 25], so xyaxes stays at 0.34202/0.93969 and sim2sim once again
+           predicts this robot. (An intermediate mount state measured 24.75 deg
+           the same day, also in-range but at the edge of the trained band.)
+           Two checks that do NOT reuse the plane fit agree: the optical-axis
+           row lands at h/sin(theta) = 1.23 m predicted vs 1.28 m measured, and
+           the bottom/centre depth ratio is 2.49 predicted vs 2.46 measured.
+           Re-run that tool after any future bracket change — it prints the
+           verdict itself. -->
       <camera name="front_depth_cam" pos="0.33 0 0.08" xyaxes="0 -1 0 0.34202 0 0.93969" fovy="56.49" />
       <inertial pos="0.021112 0 -0.005366" quat="-0.000543471 0.713435 -0.00173769 0.700719"
         mass="6.921"

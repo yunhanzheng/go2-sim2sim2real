@@ -74,6 +74,7 @@ from collections import deque
 from pathlib import Path
 import argparse
 import os
+import signal
 import sys
 import time
 
@@ -221,22 +222,34 @@ class DistillFusedPolicy(Node):
             prop_dim=N_PROPRIO, scandots_output_dim=DEPTH_LATENT_DIM,
             hidden_state_dim=512, output_activation=None, num_frames=1,
         )
+        # RecurrentDepthBackbone picks its 32-vs-34 output head from EP_USE_YAW at
+        # construction time, so the gate has to be right *before* the backbone is
+        # built. Read it off the checkpoint the way distill_runner.py does rather
+        # than trusting the caller's shell: a 34-D checkpoint otherwise dies on
+        # the strict load below because the default head is 32-D.
+        enc_out_dim = int(
+            ckpt["depth_encoder_state_dict"]["output_mlp.0.weight"].shape[0])
+        if enc_out_dim not in (DEPTH_LATENT_DIM, DEPTH_LATENT_DIM + 2):
+            raise ValueError(
+                f"unsupported depth encoder output width {enc_out_dim}; "
+                f"expected {DEPTH_LATENT_DIM} (no yaw) or "
+                f"{DEPTH_LATENT_DIM + 2} (yaw)")
+        os.environ["EP_USE_YAW"] = (
+            "1" if enc_out_dim == DEPTH_LATENT_DIM + 2 else "0")
         self.encoder = RecurrentDepthBackbone(backbone, env_cfg=None)
         self.encoder.load_state_dict(ckpt["depth_encoder_state_dict"], strict=True)
         self.encoder.eval()
         # 32 (no yaw head) or 34 (32 latent + 2 regressed heading dims). A 34-D
         # checkpoint only loads strict=True when the gate is on. EP main renamed
         # that gate EP_FEED_PRED_YAW -> EP_USE_YAW (2026-07) and
-        # RecurrentDepthBackbone now reads EP_USE_YAW only; the run scripts
-        # export both. Log the effective one so a stale legacy-only export is
-        # visible instead of silently producing a 32-D head.
+        # RecurrentDepthBackbone now reads EP_USE_YAW only. The gate is now set
+        # from the checkpoint itself above; log it so a mismatch is visible.
         self._enc_out_dim = self.encoder.output_mlp[0].out_features
         self._has_yaw_head = self._enc_out_dim == DEPTH_LATENT_DIM + 2
         self.get_logger().info(
             f"depth encoder out_dim={self._enc_out_dim} "
-            f"(yaw_head={'on' if self._has_yaw_head else 'off'}); "
-            f"EP_USE_YAW={os.environ.get('EP_USE_YAW', '0')} "
-            f"(legacy EP_FEED_PRED_YAW={os.environ.get('EP_FEED_PRED_YAW', '0')})")
+            f"(yaw_head={'on' if self._has_yaw_head else 'off'}; "
+            f"EP_USE_YAW={os.environ.get('EP_USE_YAW', '0')} inferred from ckpt)")
 
         # ----- logs
         self.trace_log_fp = None
@@ -1210,9 +1223,23 @@ def main():
     )
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        # rclpy's default SIGINT handler has already shut the context down, so
+        # falling through to rclpy.shutdown() below raises "rcl_shutdown already
+        # called" and prints a traceback that looks like a crash on every
+        # Ctrl-C. Swallow it and let the `ok()` guard below decide.
+        pass
     finally:
+        # `ros2 launch` follows its first SIGINT with a second one, and that one
+        # used to land inside destroy_node() -> destroy_publisher(), which
+        # re-raises KeyboardInterrupt from there and printed a traceback on
+        # every shutdown (seen 2026-10-29 under `ros2 launch ... is_simulation
+        # :=true`). Ignore further SIGINTs so the teardown cannot be cut in
+        # half; launch escalates to SIGTERM if this ever wedges.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

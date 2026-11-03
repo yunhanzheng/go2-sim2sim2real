@@ -49,6 +49,7 @@ install(PROGRAMS
   scripts/target_pos_bridge.py
   scripts/distill_recorder.py
   scripts/keyboard_to_joy.py
+  scripts/wireless_joy.py
   scripts/joy_sequencer.py
   scripts/depth_viewer_node.py
   # sim2sim.launch.py launches these two as package executables.

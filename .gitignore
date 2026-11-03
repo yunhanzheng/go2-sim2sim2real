@@ -20,6 +20,11 @@
 # MuJoCo scratch
 MUJOCO_LOG.TXT
 
+# Local scratch. `.ap.sh` is an SSH_ASKPASS helper that holds a plaintext
+# password, so it must never be committed; `.tmp_*` are throwaway probes.
+/.ap.sh
+/.tmp_*
+
 # Vendored librealsense build for macOS (build artifact — rebuild locally).
 /librealsense-mac/
 

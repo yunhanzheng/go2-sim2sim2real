@@ -1,0 +1,25 @@
+# Pulls the clock from the deployment host. Driven by go2-clock-sync.timer.
+#
+# The Jetson has a dead RTC and no default route, so systemd-timesyncd has
+# nothing to sync against and the clock comes back at the last shutdown time on
+# every power cycle. This unit converges whenever a host that serves the time
+# appears — at boot, or minutes later when the operator plugs in.
+
+[Unit]
+Description=Go2 clock sync from the deployment host (no RTC, no internet)
+After=network.target
+
+[Service]
+Type=oneshot
+# No sudoers entry: systemd runs this as root already, and a
+# unitree-writable NOPASSWD target would be a free escalation path. The
+# script itself is root-owned in /usr/local/sbin.
+ExecStart=/usr/local/sbin/go2_sync_clock.py
+# The no-op paths (host absent, clock already within 50 ms) exit 0 and print
+# nothing, and LogLevelMax keeps systemd's own start/finish lines out as well.
+# Without both, a robot left powered on without the host writes several lines
+# every 30 s forever and the journal stops being readable.
+LogLevelMax=notice
+
+[Install]
+WantedBy=multi-user.target

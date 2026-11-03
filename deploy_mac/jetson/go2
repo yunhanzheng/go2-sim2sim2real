@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# go2 - one-command control of the onboard deploy stack.
+#
+#   go2 run [d31|l00]   pre-flight, launch in tmux, then follow the log with
+#                       plain-language hints (lying -> standing -> engage -> walking)
+#   go2 watch           follow the running stack, same hints
+#   go2 stop            stop the stack; refuses while the robot is standing
+#   go2 log             last metrics + error counters
+#
+# Pre-flight is read-only. `run` and `stop` never publish /lowcmd themselves; the
+# launch inside tmux owns that. Nothing here moves the robot on its own.
+# (no `set -u`: ROS setup scripts reference unset vars)
+set +o pipefail
+
+source "$HOME/go2_deploy/env.sh"
+ROOT="$GO2_DEPLOY_ROOT"
+SESSION=go2
+
+say() { printf '%s\n' "$*"; }
+die() { printf '[!!] %s\n     -> %s\n' "$1" "$2"; exit 1; }
+
+latest_log() { ls -t "$ROOT"/run_logs/real/*.log 2>/dev/null | head -1; }
+nodes_running() { local n; n=$(pgrep -fc 'deploy_rl_policy/lib' 2>/dev/null); echo "${n:-0}"; }
+field() { sed -n "s/.*$2=\([^ ]*\).*/\1/p" <<< "$1" | head -1; }
+
+# Prove a topic is actually flowing. `ros2 topic echo --field header` cannot be used
+# for /lowstate: unitree_go/LowState has no header field, so that probe fails on a
+# perfectly healthy robot (measured 499.8 Hz while the probe said "nothing").
+ticking() { timeout 8 ros2 topic hz "$1" 2>&1 | grep -qm1 'average rate'; }
+
+# ---------------------------------------------------------------------------- run
+
+preflight() {
+  local n c
+  n=$(nodes_running)
+  [ "$n" -eq 0 ] || die "$n deploy nodes are already running" \
+                     "go2 watch to follow them, or go2 stop first"
+
+  systemctl is-active --quiet go2-realsense-humble \
+    || die "go2-realsense-humble is not active" "sudo systemctl restart go2-realsense-humble"
+
+  ticking /camera/depth/image_rect_raw \
+    || die "no frames on /camera/depth/image_rect_raw" "sudo systemctl restart go2-realsense-humble"
+
+  ticking /lowstate \
+    || die "no messages on /lowstate" "robot link down: ping 192.168.123.161"
+
+  c=$(ros2 topic info /joy 2>/dev/null | sed -n 's/^Publisher count: *//p')
+  [ -z "$c" ] || [ "$c" -eq 0 ] \
+    || die "$c /joy publisher(s) already alive" \
+           "a stray joy_node / wireless_to_joy would flap /policy_engaged"
+}
+
+# ----------------------------------------------------------------------- watching
+
+watch_log() {
+  local log="$1" line dlat age evx oob sd lay std verdict
+  say "[..] following $(basename "$log")   (Ctrl-C leaves the stack running)"
+  say ""
+
+  grep -a 'state_obs' "$log" 2>/dev/null | tail -1
+  tail -F -n 0 "$log" 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      *state_obs:*)
+        sd=$(field "$line" stand_diff); lay=$(field "$line" laydown); std=$(field "$line" standing)
+        if [ "$lay" = "1" ]; then
+          printf '[--] lying            stand_diff=%s\n' "$sd"
+        elif [ "$std" = "1" ] && awk "BEGIN{exit !($sd > 0.30)}"; then
+          printf '[..] standing up     stand_diff=%s\n' "$sd"
+        elif [ "$std" = "1" ]; then
+          printf '[OK] stood up        stand_diff=%s  <- hold L1+R1 to engage\n' "$sd"
+        fi
+        ;;
+      *\[cmd\]*)
+        dlat=$(field "$line" '|dlat|'); age=$(field "$line" depth_age); evx=$(field "$line" 'vx')
+        oob=$(field "$line" oob)
+        evx=$(sed -n 's/.*\[est\] vx=\([^ ]*\).*/\1/p' <<< "$line")
+        if awk "BEGIN{exit !($dlat > 3.0)}"; then
+          verdict="[!!] depth way off (|dlat|=$dlat) - floor, or something within 2 m"
+        elif awk "BEGIN{exit !($dlat > 2.0)}"; then
+          verdict="[!]  depth high (|dlat|=$dlat) - check scene"
+        elif [ "${age%ms}" -gt 150 ] 2>/dev/null; then
+          verdict="[!]  depth late (age=$age)"
+        else
+          verdict="[OK] |dlat|=$dlat age=$age est vx=$evx oob=$oob"
+        fi
+        printf '%s\n' "$verdict"
+        ;;
+      *'tick overrun'*)          printf '[!]  tick overrun - CPU contention\n' ;;
+      *'proprio pad not met'*)   printf '[!]  proprio late\n' ;;
+      *'policy_engaged=True'*)   printf '[OK] engaged\n' ;;
+      *'policy_engaged=False'*)  printf '[--] disengaged\n' ;;
+    esac
+  done
+}
+
+# --------------------------------------------------------------------------- cmds
+
+cmd_run() {
+  local model="${1:-d31}" log before
+  preflight
+
+  # `ready` is already present in every older log, so matching on text alone passes
+  # instantly and then follows the wrong file. Require a log newer than the one that
+  # existed before this launch.
+  before=$(latest_log)
+  tmux kill-session -t "$SESSION" 2>/dev/null
+  tmux new-session -d -s "$SESSION" -x 220 -y 50 "bash $ROOT/start_real.sh $model"
+  printf '[..] starting %s\n' "$model"
+
+  for _ in $(seq 1 70); do
+    log=$(latest_log)
+    if [ -n "$log" ] && [ "$log" != "$before" ]; then
+      grep -qa 'distill_fused_policy ready' "$log" && break
+    fi
+    sleep 1
+  done
+  grep -qa 'distill_fused_policy ready' "$log" 2>/dev/null || {
+    printf '[!!] stack did not come up in 70 s:\n'; tail -20 "$log"; exit 1; }
+
+  printf '[OK] up: %s\n' "$(basename "$log")"
+  printf '[..] B = stand   L1+R1 = engage   A = lay   L2+R2 = stop ladder\n\n'
+  watch_log "$log"
+}
+
+cmd_watch() {
+  local log; log=$(latest_log)
+  [ -n "$log" ] || die "no log yet" "go2 run"
+  watch_log "$log"
+}
+
+cmd_stop() {
+  local log lay sd
+  log=$(latest_log)
+  if [ -z "$log" ] && ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    say '[--] nothing running'; return 0
+  fi
+
+  lay=$(grep -a 'state_obs' "$log" 2>/dev/null | tail -1 | sed -n 's/.*laydown=\([01]\).*/\1/p')
+  sd=$(grep -a 'state_obs' "$log" 2>/dev/null | tail -1 | sed -n 's/.*stand_diff=\([^ ]*\).*/\1/p')
+  if [ "$lay" != "1" ]; then
+    die "robot is not lying down (laydown=${lay:-?} stand_diff=$sd)" \
+        "press A first - killing low_level_ctrl drops a standing robot"
+  fi
+
+  tmux kill-session -t "$SESSION" 2>/dev/null
+  sleep 4
+  printf '[OK] stopped, nodes left: %s\n' "$(nodes_running)"
+}
+
+cmd_log() {
+  local log over early
+  log=$(latest_log)
+  [ -n "$log" ] || die "no log yet" "go2 run"
+  printf '== %s\n\n' "$(basename "$log")"
+
+  printf -- '-- last 8 control ticks\n'
+  grep -a '\[cmd\]' "$log" | tail -8 | sed 's/.*\[cmd\]/[cmd]/'
+  printf '\n'
+  printf -- '-- counts: tick overrun=%s\n' "$(grep -ac 'tick overrun' "$log")"
+  printf -- '-- last state_obs\n'
+  grep -a 'state_obs' "$log" | tail -1 | sed 's/.*state_obs/state_obs/'
+}
+
+# ------------------------------------------------------------------------ dispatch
+
+case "${1:-}" in
+  run)   shift; cmd_run "$@" ;;
+  watch) cmd_watch ;;
+  stop)  cmd_stop ;;
+  log)   cmd_log ;;
+  *)     sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

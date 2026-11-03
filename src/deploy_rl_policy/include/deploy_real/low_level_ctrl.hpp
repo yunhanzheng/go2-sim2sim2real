@@ -28,6 +28,12 @@ private:
     void joy_callback(sensor_msgs::msg::Joy::SharedPtr msg);
     void target_pos_callback(std_msgs::msg::Float32MultiArray::SharedPtr msg);
     void state_machine();
+    // L2+R2 stop ladder (see the comment on hold_ / passive_ below): first
+    // press picks HOLD or PASSIVE, later presses only ever reduce authority.
+    void enter_stop();
+    void enter_passive();
+    void hold_tick();
+    void passive_tick();
     void state_transform(vector<double> &target_angels);
     void state_obs();
     void run_policy();
@@ -82,6 +88,47 @@ private:
     // L1+R1 have been seen released, so still-held buttons can't instantly
     // re-engage and cancel the settle ramp the timeout just started.
     bool rl_stall_fault_ = false;
+    // L2+R2 stop ladder — two latches, each one strictly weaker than the last,
+    // both of which own /lowcmd and keep streaming until the operator presses
+    // L2+R2 again. Neither hands the joints back once set.
+    //
+    // hold_    "stay still". Stop writing cmd_msg_ and republish it byte for
+    //          byte: every field (mode/kp/kd/q/tau and the CRC over them) stays
+    //          identical to the frame the press interrupted. On a position-
+    //          controlled joint that is exactly "keep doing what you were
+    //          doing", so a settled robot is motionless — this is the report's
+    //          "press it and nothing happens". Only legal when the robot is
+    //          settled: freezing a mid-gait target freezes a trot with two feet
+    //          in the air, which is how it ends up on its back.
+    // passive_ unitree_cpp_deploy's State_Passive: kp -> 0, kd = passive_kd,
+    //          dq = tau = 0, q = live measured. Limb goes limp. Second rung from
+    //          HOLD, and the only rung for a robot that was already moving.
+    //
+    // Why not the old rclcpp::shutdown(): the last frame then stayed on the wire
+    // with nobody left to overwrite it, so a half-finished standing ramp at
+    // kp=50 kept pushing the robot up — the "jerks once, stands up, sometimes
+    // on its back" report. A latched state that owns the message cannot do that.
+    bool hold_ = false;
+    bool passive_ = false;
+    // Edge latch for the L2+R2 ladder. The pad repeats /joy at 20 Hz while a
+    // trigger is held, so without this one long press would walk the whole
+    // ladder (hold -> passive -> exit) in 100 ms. Only a fresh press advances a
+    // rung.
+    bool stop_btn_held_ = false;
+    // Frame + gains caught at the stop press, so the PASSIVE fade starts exactly
+    // where the interrupted frame left off (no torque step) and decays to the
+    // reference's kp=0 / kd=passive_kd.
+    double stop_q0_[12] = {0.0};
+    double stop_kp0_[12] = {0.0};
+    double stop_kd0_[12] = {0.0};
+    rclcpp::Time stop_time_;
+    // Per-engage "the actor has produced at least one step" flag: cleared on
+    // every fresh disengaged->engaged edge, set by the first validated
+    // /rl/target_pos. While it is false the stall timeout must not run — the
+    // policy node is gated on its own startup (startup_wait_s / first depth
+    // latent) and a 1.5 s timeout there latched the fault, settled the robot
+    // and made the sticks look dead (2026-10 real run: 推杆不走).
+    bool rl_engaged_steps_ = false;
     bool is_simulation;
     // Torque-aware position clamp in run_policy(): bound |q_cmd - q_meas| to
     // tau_limit_i / policy_kp so the position PD (tau_ff = 0) can never
@@ -94,7 +141,14 @@ private:
     double policy_kd_;
     double joy_timeout_s_;          // momentary mode: /joy silence beyond this fires the dead-man (0 disables)
     double rl_stall_timeout_s_;     // engaged: /rl/target_pos dead beyond this -> latched fault + settle (0 disables)
+    double passive_kd_;             // L2+R2 Passive state: kp=0 with this kd (reference State_Passive uses 3.0)
+    double passive_ramp_s_;         // fade the holding torque out over this long instead of cutting it (0 = instant, the reference's behaviour)
+    double stop_tilt_max_;          // rad: |roll| and |pitch| below this count as settled (HOLD is allowed)
+    double stop_dq_max_;            // rad/s: max|dq| below this counts as settled
+    float imu_rpy_[3] = {0.0f, 0.0f, 0.0f}; // last /lowstate body rpy, for the settled test
+    double rl_startup_grace_s_;     // engaged with no step yet: hold the cached pose this long before the timeout may fire (0 disables)
     rclcpp::Time last_rl_msg_time_; // last /rl/target_pos, for the engaged /lowcmd keep-alive
+    rclcpp::Time engage_time_;      // start of the current engage, for the startup grace
     rclcpp::Time last_joy_time_;    // last valid /joy, for the joy-loss dead-man
 
     std::ofstream latency_log_;

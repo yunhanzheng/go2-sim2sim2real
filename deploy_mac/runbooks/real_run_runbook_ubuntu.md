@@ -54,8 +54,22 @@ ip -br addr | grep 192.168.123    # note NIC name, e.g. eno1
 ## 2. Sport mode off
 
 Sport mode must be disabled or the factory controller will fight `/lowcmd`. Re-check
-after every power cycle. Use your local `unitree_sdk2py` / `disable_sport` script;
-success looks like `CheckMode: code=0` plus a release confirmation.
+after every power cycle. The old instruction pointed at `~/go2/disable_sport.py`, which
+needs `unitree_sdk2_python` + a venv that the Ubuntu host does not have — the step was
+quietly unexecutable. `deploy_mac/run/sport_mode.py` does the same thing over the ROS
+topics the robot already exposes (`/api/motion_switcher/*`), so it runs from the same
+environment as the launch:
+
+```bash
+deploy_mac/run/sport_mode.py --check    # read-only; name="" means no mode is active
+deploy_mac/run/sport_mode.py --off      # refuses while the legs look like the stand pose
+deploy_mac/run/sport_mode.py --on NAME  # give the factory controller back
+```
+
+A healthy `--check` on a released robot prints `ok, code=0 {"form": "0", "name": ""}`.
+`--off` is safe only on a robot that is already lying down (it reads the mean calf
+angle: lay −2.72, stand −1.5) — lay it down with the factory remote first, or pass
+`--force` at your own risk.
 
 ---
 
@@ -144,20 +158,63 @@ Do **not** engage on hardware until hoisted.
 
 Verify FSM + PD **before** loading a walking policy. Hoisted; **do not engage** yet.
 
-The default launch starts Xbox `joy_node`. For the **Unitree remote**, run the bridge
-yourself:
+The default launch starts Xbox `joy_node`. For the **Unitree remote** you have two
+options — pick exactly one, never both:
 
 ```bash
-# Terminal A — remote → /joy (wake the remote first)
-python3 deploy_mac/run/wireless_to_joy.py
+# Option 1 — decoded on the robot, no laptop in the loop (preferred)
+ros2 launch deploy_rl_policy distill.launch.py use_wireless_joy:=true ...
 
-# Terminal B
-ros2 run deploy_rl_policy low_level_ctrl --ros-args \
-  -p is_simulation:=false \
-  -p policy_kp:=35.0 -p policy_kd:=0.6
+# Option 2 — laptop bridge (older path, still works)
+python3 deploy_mac/run/wireless_to_joy.py   # Terminal A, wake the remote first
 ```
 
-Heartbeat `msg count` in `wireless_to_joy` must increase.
+Heartbeat `msg count` in `wireless_joy` / `wireless_to_joy` must increase. Before
+trusting the on-robot path on a new robot, look at what the remote is actually
+sending (read-only, publishes nothing):
+
+```bash
+ros2 run deploy_rl_policy wireless_joy.py --probe
+```
+
+It prints `keys`, the four stick values and the `LowState.wireless_remote` mirror
+side by side. `wirelesscontroller 0 msgs` in the heartbeat means no remote traffic
+at all — the remote is asleep, off or unpaired, not a node fault. Wake it and the
+count starts moving.
+
+The on-robot node reads **only** `/wirelesscontroller`. `LowState.wireless_remote`
+is deliberately not a fallback: the board repeats the last 40-byte frame at 500 Hz
+forever, so treating it as a live source keeps `/joy` publishing after the remote
+has died and `joy_timeout_s` never fires (measured 2026-10-29: 22 501 identical
+frames in 45 s with the remote silent, the last one holding L1+R1 and a forward
+stick). A dead remote therefore has to look dead: 1 s of `/wirelesscontroller`
+silence, then `/joy` stops, then the 0.5 s dead-man in `low_level_ctrl` trips.
+
+That contract is checkable with no robot involved: `deploy_mac/diag/check_wireless_joy.py`
+spawns the node on sandbox domain 99, publishes synthetic `/wirelesscontroller`
+messages, and asserts the engage buttons, the `axes[1]` walking axis, the L2+R2
+ladder, that `/joy` stops when the messages do, and that two SIGINTs shut it down
+without a traceback. Re-run it after touching `wireless_joy.py`, its constants, or
+either consumer's indices:
+
+```bash
+GO2_DEPLOY_ROOT=~/go2_deploy python3 deploy_mac/diag/check_wireless_joy.py
+```
+
+The other half of that pair needs the robot but does not move it:
+`check_joy_live.py` starts the same node on the robot's own domain and watches what
+a real remote makes it publish. It **refuses to run if anything is subscribed to
+`/joy`**, so on a parked robot there is no consumer and nothing can move. The clock
+starts on your first button press, so you can pick the remote up at your own pace:
+
+```bash
+GO2_DEPLOY_ROOT=~/go2_deploy python3 deploy_mac/diag/check_joy_live.py
+```
+
+Press, in order: **L1+R1** (2 s), left stick forward (2 s), **L2 alone** (1 s),
+**L2+R2** (2 s). Exit 0 means the remote's keys land on the indices the consumers
+read — the last thing that can be checked without a standing robot, since
+`low_level_ctrl` will not engage unless `is_standing_`.
 
 | Input | Action |
 | --- | --- |
@@ -165,15 +222,15 @@ Heartbeat `msg count` in `wireless_to_joy` must increase.
 | **A** | lay down |
 | Hold **L1+R1** (Xbox: LB+RB; keyboard: space) | engage policy |
 | Stick forward / **W** | walk (only while engaged) |
-| **L2+R2** | exit |
+| **L2+R2** | stop ladder, one rung per press — **HOLD** (settled: the last frame is republished unchanged, so the robot does not move) → **PASSIVE** (kp fades to 0, limb goes limp) → exit. A moving robot skips HOLD. The command stream never stops, so no stale target is left for the motors. |
 
 ---
 
 ## 7. Real: full policy stack
 
 Hoisted. Sport off. Confirm `/camera/depth/image_rect_raw` and `/lowstate` are still
-publishing. Start `wireless_to_joy.py` in a separate terminal if using the Unitree remote
-(the launch file does not start it for you).
+publishing. The Unitree remote is fed either by `use_wireless_joy:=true` (decoded on the
+robot) or by running `wireless_to_joy.py` in a separate terminal — see §6.
 
 ```bash
 ros2 launch deploy_rl_policy distill.launch.py is_simulation:=false \
@@ -196,8 +253,13 @@ exist:
 | Input device | Command | `/joy` publisher |
 | --- | --- | --- |
 | Physical pad (Xbox, LB+RB) | default `use_joy:=true` | `joy_node` |
-| Unitree remote | `use_joy:=false` + run `wireless_to_joy.py` | `wireless_to_joy` |
+| Unitree remote, on the robot | `use_wireless_joy:=true` | `wireless_joy` |
+| Unitree remote, from a laptop | `use_joy:=false` + run `wireless_to_joy.py` | `wireless_to_joy` |
 | Keyboard | `use_keyboard:=true` | `keyboard_to_joy` |
+
+The launch file enforces the exclusivity for the first three: `joy_node` also needs
+`use_wireless_joy:=false`, and `wireless_joy` needs `use_keyboard:=false`.
+`wireless_to_joy.py` run from a laptop cannot be gated — pass `use_joy:=false` yourself.
 
 If two of them publish at once they carry contradictory button states: the one you hold
 says L1+R1 down, the idle one says all buttons up. Under the real-mode default
@@ -222,7 +284,9 @@ Real `contact_threshold` uses raw foot-force units — do **not** copy the sim v
 See [`contact_threshold_calibration_2026-07-24.md`](../../notes/analysis/contact_threshold_calibration_2026-07-24.md).
 
 **Sequence:** wake remote → **B** stand ~2 s → hold **L1+R1** to engage → stick forward →
-release shoulder buttons to stand / **A** to lay; hard stop: cut power or **L2+R2**.
+release shoulder buttons to stand / **A** to lay; hard stop: **L2+R2** (settled robot
+→ HOLD, it simply stops moving; press again to go limp, again to exit). Cutting power is the only
+true hard stop.
 
 ---
 
@@ -240,7 +304,7 @@ bash "$REPO/deploy_mac/kill_ros.sh"
 | --- | --- |
 | `No module named 'rclpy._rclpy_pybind11'` | Exit conda; `export PATH=/usr/bin:$PATH` |
 | `depth_viewer_node` → `No executable found` | `python3 src/deploy_rl_policy/scripts/depth_viewer_node.py` |
-| `wireless_to_joy` heartbeat stuck | Wake the Unitree remote |
+| `wireless_to_joy` / `wireless_joy` heartbeat stuck | Wake the Unitree remote |
 | Crouches / collapses **on engage**, `/rl` log shows `engaged=True/False` flapping | Two `/joy` publishers: relaunch with `use_joy:=false`, and check `ros2 topic info /joy` is `Publisher count: 1` |
 | Two `depth_camera_node` / two `distill_fused_policy` | Leftover stack: `ps -eo pid,args \| grep -E "depth_camera_node\|distill_fused_policy"`, kill the old PID; `/rl/target_pos` must show `Publisher count: 1` |
 | No `/camera/depth/...` | `ssh unitree@192.168.123.18 sudo systemctl restart go2-realsense-humble`; then check `is-active`, an IP clash with `.18`, `GO2_IFACE`, and whether the topic picked up a nested namespace |

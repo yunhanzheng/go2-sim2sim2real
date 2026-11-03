@@ -1,0 +1,19 @@
+# Retry cadence for go2-clock-sync.service.
+#
+# 30 s rather than a single boot-time shot: the host only serves the time while
+# the operator's session is up, which need not be when the robot is switched on.
+# Each attempt is a 5-sample TCP probe that exits 0 silently when the clock is
+# already within 50 ms, so a steady-state tick costs one sub-millisecond blip.
+
+[Unit]
+Description=Retry go2-clock-sync until the deployment host answers
+
+[Timer]
+# Past the point where enP8p1s0 is up, before an operator would run a deploy.
+OnBootSec=8s
+OnUnitActiveSec=30s
+# The default 1 min fuzz would smear a 30 s cadence into a no-op.
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -108,6 +108,40 @@ LowLevelControl::LowLevelControl() : Node("finite_state_machine_node")
     // ramp the timeout just started. 0.0 disables (keep-alive only).
     this->declare_parameter("rl_stall_timeout_s", 1.5);
     this->get_parameter("rl_stall_timeout_s", rl_stall_timeout_s_);
+    // Startup grace, counted from the engage edge: until the actor has produced
+    // its FIRST step, the stall timeout above must not run. The policy node is
+    // gated on its own startup (ep_rl_policy --startup_wait_s waiting for the
+    // viewer, distill waiting for its first depth latent), and on real hardware
+    // the 1.5 s timeout fired inside that window: it latched the fault, settled
+    // the robot and left the sticks looking dead (2026-10 real run: 推杆不走).
+    // While the grace holds, the cached pose is republished so the wire stays
+    // fed; once it expires the normal timeout applies. 0.0 disables (HEAD
+    // behaviour: first-second silence is already a fault).
+    this->declare_parameter("rl_startup_grace_s", 10.0);
+    this->get_parameter("rl_startup_grace_s", rl_startup_grace_s_);
+    RCLCPP_INFO(this->get_logger(), "rl stall timeout %.2f s, startup grace %.2f s",
+                rl_stall_timeout_s_, rl_startup_grace_s_);
+    // L2+R2 stop ladder (2026-10-29, after unitree_cpp_deploy's State_Passive).
+    // HOLD is the answer to "press it and the robot stays put": the last frame
+    // is republished untouched, so the joints keep executing exactly the target
+    // they already had. PASSIVE is the reference's damped state for everything
+    // HOLD must not touch (a robot that is already moving).
+    this->declare_parameter("passive_kd", 3.0);
+    this->get_parameter("passive_kd", passive_kd_);
+    // The reference slams kp to 0 in one 1 ms tick. On a standing robot that
+    // instantly deletes the holding torque and the body drops. Fading kp over
+    // this long turns the same end state into a kneel (0 = reference behaviour).
+    this->declare_parameter("passive_ramp_s", 0.30);
+    this->get_parameter("passive_ramp_s", passive_ramp_s_);
+    // "Settled" gate for HOLD: slow and upright. Anything else gets PASSIVE.
+    this->declare_parameter("stop_tilt_max", 0.35); // rad (~20 deg)
+    this->get_parameter("stop_tilt_max", stop_tilt_max_);
+    this->declare_parameter("stop_dq_max", 0.5); // rad/s
+    this->get_parameter("stop_dq_max", stop_dq_max_);
+    RCLCPP_INFO(this->get_logger(),
+                "L2+R2 -> HOLD if settled (|rpy|<=%.2f rad, max|dq|<%.2f) else PASSIVE "
+                "(kp -> 0 over %.2f s, kd=%.2f)",
+                stop_tilt_max_, stop_dq_max_, passive_ramp_s_, passive_kd_);
     this->declare_parameter<std::string>("latency_log", "");
     const auto latency_log_path = this->get_parameter("latency_log").as_string();
     if (!latency_log_path.empty())
@@ -127,6 +161,7 @@ LowLevelControl::LowLevelControl() : Node("finite_state_machine_node")
         }
     }
     last_rl_msg_time_ = this->get_clock()->now();
+    engage_time_ = last_rl_msg_time_;
     last_joy_time_ = this->get_clock()->now();
     if (is_simulation)
     {
@@ -186,10 +221,14 @@ void LowLevelControl::init_cmd()
 
 void LowLevelControl::keepalive_tick()
 {
-    // Only while the policy is engaged and healthy: pre-engage the FSM states
-    // own their own publication cadence, and a latched stall fault must keep
-    // its settle-to-stand ownership.
-    if (is_standing_ and should_run_policy_ and not rl_stall_fault_)
+    // While the policy is engaged and healthy, and unconditionally while a stop
+    // owns the joints: pre-engage the FSM states own their own publication
+    // cadence, and a latched stall fault must keep its settle-to-stand
+    // ownership. HOLD and PASSIVE are the exception — they must stay on the
+    // wire at full rate until the operator releases them, otherwise the motors
+    // fall back to their own command watchdog (the whole reason the stop states
+    // own the message instead of shutting the process down).
+    if (hold_ or passive_ or (is_standing_ and should_run_policy_ and not rl_stall_fault_))
         publish_lowcmd();
 }
 
@@ -210,6 +249,8 @@ void LowLevelControl::state_callback(unitree_go::msg::LowState::SharedPtr msg)
     {
         motor[i] = msg->motor_state[i];
     }
+    for (int i = 0; i < 3; i++)
+        imu_rpy_[i] = msg->imu_state.rpy[i];
     have_lowstate_ = true;
 }
 
@@ -240,6 +281,7 @@ void LowLevelControl::target_pos_callback(std_msgs::msg::Float32MultiArray::Shar
         }
     }
     recieved_data_ = true;
+    rl_engaged_steps_ = true;
     last_rl_msg_time_ = this->get_clock()->now();
     last_target_receive_mono_ns_ = target_receive_ns;
     current_target_seq_ = msg->layout.data_offset;
@@ -266,6 +308,40 @@ void LowLevelControl::joy_callback(sensor_msgs::msg::Joy::SharedPtr msg)
     if (rl_stall_fault_ and not (msg->buttons[4] and msg->buttons[5]))
         rl_stall_fault_ = false;
 
+    // L2+R2 stop ladder, handled FIRST so no other button can dirty the FSM
+    // flags while a stop is latched. Threshold, not ==-1.0 — analog triggers on
+    // some pads never report exactly -1.0 when floored. One rung per PRESS, not
+    // per message: /joy autorepeats at 20 Hz while the trigger is held, and
+    // acting on every message would run the whole ladder (hold -> passive ->
+    // exit) inside 100 ms of one press. See the comment on hold_/passive_ in the
+    // header for why the stream keeps running instead of the process exiting.
+    const bool stop_pressed = msg->axes[2] < -0.9 && msg->axes[5] < -0.9;
+    if (stop_pressed and not stop_btn_held_)
+    {
+        stop_btn_held_ = true;
+        if (hold_)
+        {
+            // Second press from HOLD: same message, but now the limb is meant
+            // to let go. Third press then exits.
+            enter_passive();
+        }
+        else if (passive_)
+        {
+            RCLCPP_WARN(this->get_logger(), "L2+R2 again — exiting (robot is already passive)");
+            rclcpp::shutdown();
+        }
+        else
+        {
+            enter_stop();
+        }
+        return;
+    }
+    if (not stop_pressed)
+        stop_btn_held_ = false;
+    // A latched stop ignores every other button until L2+R2 is pressed again.
+    if (hold_ or passive_)
+        return;
+
     if (is_laydown_ and msg->buttons[1]) // Button B
     {
         should_stand_ = true;
@@ -287,7 +363,11 @@ void LowLevelControl::joy_callback(sensor_msgs::msg::Joy::SharedPtr msg)
         // this branch runs on every /joy message while the buttons are held,
         // and refreshing the timestamp continuously would defeat the timeout.
         if (not should_run_policy_)
+        {
             last_rl_msg_time_ = this->get_clock()->now();
+            engage_time_ = last_rl_msg_time_;
+            rl_engaged_steps_ = false;
+        }
         should_laydown_ = false;
         should_stand_ = false;
         should_run_policy_ = true;
@@ -309,15 +389,138 @@ void LowLevelControl::joy_callback(sensor_msgs::msg::Joy::SharedPtr msg)
         should_laydown_ = false;
         should_settle_stand_ = true;
     }
+}
 
-    // E-stop: both triggers fully pressed. Threshold, not ==-1.0 — analog
-    // triggers on some pads never report exactly -1.0 when floored.
-    if (msg->axes[2] < -0.9 && msg->axes[5] < -0.9)
-        rclcpp::shutdown();
+void LowLevelControl::enter_stop()
+{
+    // The whole stop decision in one place. Both rungs own the message; the
+    // choice is only about whether the operator gets "nothing happens" or "the
+    // limb lets go".
+    //
+    // HOLD is only legal once the robot is already still and upright: freezing
+    // the frame is freezing a *target*, and a target captured mid-trot has two
+    // feet in the air, so holding it is what tips the robot over. A moving robot
+    // therefore goes straight to PASSIVE, where the reference puts it too.
+    double max_dq = 0.0;
+    if (have_lowstate_)
+        for (int i = 0; i < 12; i++)
+            max_dq = std::max(max_dq, std::fabs(double(motor[i].dq)));
+    const bool tilted = std::fabs(double(imu_rpy_[0])) > stop_tilt_max_ or
+                        std::fabs(double(imu_rpy_[1])) > stop_tilt_max_;
+    const bool settled = have_lowstate_ and not tilted and max_dq < stop_dq_max_;
+
+    // Whichever rung runs, the policy and every pending FSM transition are off:
+    // nothing may write cmd_msg_ behind the stop's back.
+    should_run_policy_ = false;
+    should_stand_ = false;
+    should_laydown_ = false;
+    should_settle_stand_ = false;
+
+    if (settled)
+    {
+        hold_ = true;
+        RCLCPP_WARN(this->get_logger(),
+                    "L2+R2 — HOLD (settled: max|dq| %.2f < %.2f, |roll| %.2f |pitch| %.2f). "
+                    "The last frame is republished unchanged, so the joints keep executing the "
+                    "target they already had and the robot does not move. Press L2+R2 again to "
+                    "go passive, once more to exit.",
+                    max_dq, stop_dq_max_, double(imu_rpy_[0]), double(imu_rpy_[1]));
+        hold_tick();
+    }
+    else
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "L2+R2 — not settled (max|dq| %.2f, |roll| %.2f |pitch| %.2f) -> PASSIVE: "
+                    "freezing a moving target would strand a foot in the air, so the limb lets go "
+                    "instead. Press L2+R2 again to exit.",
+                    max_dq, double(imu_rpy_[0]), double(imu_rpy_[1]));
+        enter_passive();
+    }
+}
+
+void LowLevelControl::enter_passive()
+{
+    hold_ = false;
+    passive_ = true;
+    should_run_policy_ = false;
+    should_stand_ = false;
+    should_laydown_ = false;
+    should_settle_stand_ = false;
+    // Snapshot the frame the motors were executing this instant. The fade below
+    // starts from exactly these gains, so the first passive frame is torque-
+    // identical to the last active one.
+    for (int i = 0; i < 12; i++)
+    {
+        stop_q0_[i] = double(cmd_msg_.motor_cmd[i].q);
+        stop_kp0_[i] = double(cmd_msg_.motor_cmd[i].kp);
+        stop_kd0_[i] = double(cmd_msg_.motor_cmd[i].kd);
+    }
+    stop_time_ = this->get_clock()->now();
+    RCLCPP_WARN(this->get_logger(),
+                "L2+R2 — PASSIVE: kp %.1f -> 0 over %.2f s, kd -> %.2f, q = measured. The "
+                "stream keeps running so no stale target is left for the motors; press L2+R2 "
+                "again to exit.",
+                stop_kp0_[0], passive_ramp_s_, passive_kd_);
+    passive_tick(); // apply now, not on the next 20 ms FSM tick
+}
+
+void LowLevelControl::hold_tick()
+{
+    // The entire HOLD state: republish cmd_msg_ untouched. Every field — mode,
+    // kp, kd, q, tau and the CRC computed over them — is byte-identical to the
+    // frame the press interrupted, so from the motors' side nothing changed at
+    // all. That is what "keep still" means on a position-controlled joint: the
+    // same position error keeps producing the same holding torque.
+    publish_lowcmd();
+}
+
+void LowLevelControl::passive_tick()
+{
+    const double elapsed = (this->get_clock()->now() - stop_time_).seconds();
+    const double a = (passive_ramp_s_ > 0.0)
+                         ? std::min(1.0, std::max(0.0, elapsed / passive_ramp_s_))
+                         : 1.0;
+    // Torque = kp*(q_cmd - q_meas) + kd*(0 - dq). Both terms fade along `a`, so
+    // the holding torque decays instead of disappearing in one tick. At a == 1
+    // this is unitree_cpp_deploy's State_Passive exactly: kp 0, kd passive_kd,
+    // dq = tau = 0, q = live measured — but reached continuously, which is why
+    // it does not read as "it twitched once".
+    for (int i = 0; i < 12; i++)
+    {
+        cmd_msg_.motor_cmd[i].mode = 0x01; // Set toque mode, 0x00 is passive mode
+        cmd_msg_.motor_cmd[i].kp = stop_kp0_[i] * (1.0 - a);
+        cmd_msg_.motor_cmd[i].kd = stop_kd0_[i] + (passive_kd_ - stop_kd0_[i]) * a;
+        // While kp is still non-zero the target must stay ON the frozen pose —
+        // that is what is holding the robot up. Once kp has reached 0 the q
+        // field is inert, so hand it to the live measurement and leave no stale
+        // pose anywhere in the message.
+        cmd_msg_.motor_cmd[i].q =
+            (a >= 1.0 and have_lowstate_) ? double(motor[i].q) : stop_q0_[i];
+        cmd_msg_.motor_cmd[i].dq = 0;
+        cmd_msg_.motor_cmd[i].tau = 0;
+    }
+    publish_lowcmd();
 }
 
 void LowLevelControl::state_machine()
 {
+    // A latched stop owns everything: it publishes its own command and never
+    // hands the joints back, so nothing below (policy, ramps, pose holds) may
+    // run. Checked BEFORE the have_lowstate_ gate so L2+R2 pressed before the
+    // first /lowstate still does something sensible.
+    if (hold_ or passive_)
+    {
+        // This early return skips the /policy_engaged publish below, which would
+        // otherwise leave the RL stack inferring against a stale `true`.
+        std_msgs::msg::Bool engaged_msg;
+        engaged_msg.data = false;
+        engaged_puber_->publish(engaged_msg);
+        if (hold_)
+            hold_tick();
+        else
+            passive_tick();
+        return;
+    }
     // Wait for the first /lowstate (real) or /mujoco/lowstate (sim) before
     // running any FSM logic. Without this guard state_transform records
     // q_init_ from default-zero motor[i].q, then interpolates 0 → lay_angels
@@ -382,7 +585,22 @@ void LowLevelControl::state_machine()
         // keys off last_rl_msg_time_ (message ARRIVAL), never publication,
         // so the per-tick republish below cannot mask a stall.
         double stall_s = (this->get_clock()->now() - last_rl_msg_time_).seconds();
-        if (rl_stall_timeout_s_ > 0.0 and stall_s > rl_stall_timeout_s_)
+        const double engaged_s = (this->get_clock()->now() - engage_time_).seconds();
+        if (not rl_engaged_steps_ and engaged_s <= rl_startup_grace_s_)
+        {
+            // Not a single step since this engage: that is the NORMAL state
+            // while the policy node sits behind its own startup gate. Keep the
+            // wire fed with the cached pose (the standing hold built before
+            // engage) and stay silent-ish — calling this "stalled" sent the
+            // operator hunting for a blocking bug that wasn't there.
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                 "engaged, waiting for the actor's first step (%.1f s of %.1f s "
+                                 "grace; the policy node is likely gated on startup_wait_s / the "
+                                 "depth latent) — holding the cached pose",
+                                 engaged_s, rl_startup_grace_s_);
+            publish_lowcmd();
+        }
+        else if (rl_stall_timeout_s_ > 0.0 and stall_s > rl_stall_timeout_s_)
         {
             RCLCPP_ERROR(this->get_logger(),
                          "/rl/target_pos dead > %.1f s while engaged — latching stall "

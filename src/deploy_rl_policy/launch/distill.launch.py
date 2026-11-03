@@ -13,6 +13,15 @@ Common args:
   scene_xml:=/abs/path/to/scene.xml (sim only; depth_sim_node + mujoco_simulator must agree)
   policy_kp:=35.0  policy_kd:=0.6
   action_delay:=0|1
+  rl_startup_grace_s:=10.0          (engage -> first actor step; the RL stall
+                                     timeout is suppressed this long so a slow
+                                     policy startup is not read as a dead actor;
+                                     0 = HEAD behaviour)
+  L2+R2 stop ladder: passive_kd:=3.0  passive_ramp_s:=0.30
+                     stop_tilt_max:=0.35  stop_dq_max:=0.5
+                                     (settled -> HOLD the last frame untouched;
+                                     anything still moving -> PASSIVE, kp -> 0
+                                     over passive_ramp_s, kd=passive_kd)
   depth_latency_s:=<auto> proprio_latency_s:=<auto> (sim: 0.080/0.016 s; real: 0/0)
   depth_input_topic:=/camera/depth/image_rect_raw  (real only; Jetson depth topic)
   lin_vel_max:=1.0  binary_vel:=0|1  vel_deadzone:=0.2   (defaults match run_real_remote.sh)
@@ -25,6 +34,10 @@ Common args:
                                      W/S=fwd, ←/→=strafe, Q/E=yaw, Z+X(hold)=quit)
   kbd_speed:=1.0                    (keyboard stick magnitude in [0,1] when
                                      use_keyboard:=true; scales top speed)
+  use_wireless_joy:=false           (true => wireless_joy.py replaces joy_node and
+                                     publishes /joy from the robot's own remote
+                                     (/wirelesscontroller), so no laptop and no
+                                     wireless_to_joy.py)
 
 Drive the robot in MuJoCo from the keyboard (deploy stack, no gamepad):
   ros2 launch deploy_rl_policy distill.launch.py is_simulation:=true \\
@@ -34,7 +47,6 @@ On the Mac use the env+path wrapper: deploy_mac/run/keyboard_control.sh
 import os
 import sys
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition, UnlessCondition
@@ -44,20 +56,23 @@ from launch_ros.descriptions import ParameterValue
 
 
 def generate_launch_description():
-    # view_prediction.py lives at <workspace>/deploy_mac/diag/ — resolve from
-    # the installed package share dir: install/<pkg>/share/<pkg> -> 3 up -> workspace
-    _pkg_share = get_package_share_directory("deploy_rl_policy")
-    _ws_root = os.path.normpath(os.path.join(_pkg_share, "..", "..", ".."))
-    _view_script = os.path.join(_ws_root, "deploy_mac", "diag", "view_prediction.py")
+    # The default ckpt / scene_xml / viewer paths hang off the DEPLOY root, which
+    # is not `<share>/../../..` (that is `install/`) — see deploy_paths.py for
+    # why that off-by-one went unnoticed. Imported by path because a launch file
+    # is executed from share/<pkg>/launch/ with nothing else on sys.path.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from deploy_paths import default_ep_root, deploy_root
+
+    _deploy_root = deploy_root()
+    _view_script = os.path.join(
+        _deploy_root, "deploy_mac", "diag", "view_prediction.py")
 
     # The training repo supplies the policy classes:
     # https://github.com/Roman-089/go2-flyball-parkour
     # Override with $EP_ROOT or the ep_root: launch argument.
-    _ep_root = os.environ.get(
-        "EP_ROOT", os.path.join(os.path.dirname(_ws_root), "go2-flyball-parkour")
-    )
+    _ep_root = default_ep_root(_deploy_root)
     _default_ckpt = os.path.join(
-        _ws_root, "models", "L00-02-flat-baseline-delay-distillation-noised",
+        _deploy_root, "models", "L00-02-flat-baseline-delay-distillation-noised",
         "model_14500.pt",
     )
 
@@ -78,6 +93,7 @@ def generate_launch_description():
     vel_deadzone = LaunchConfiguration("vel_deadzone")
     use_keyboard = LaunchConfiguration("use_keyboard")
     use_joy = LaunchConfiguration("use_joy")
+    use_wireless_joy = LaunchConfiguration("use_wireless_joy")
     kbd_speed = LaunchConfiguration("kbd_speed")
     contact_threshold = LaunchConfiguration("contact_threshold")
     env_class_eq_17 = LaunchConfiguration("env_class_eq_17")
@@ -87,6 +103,11 @@ def generate_launch_description():
     momentary_engage = LaunchConfiguration("momentary_engage")
     joy_timeout_s = LaunchConfiguration("joy_timeout_s")
     rl_stall_timeout_s = LaunchConfiguration("rl_stall_timeout_s")
+    rl_startup_grace_s = LaunchConfiguration("rl_startup_grace_s")
+    passive_kd = LaunchConfiguration("passive_kd")
+    passive_ramp_s = LaunchConfiguration("passive_ramp_s")
+    stop_tilt_max = LaunchConfiguration("stop_tilt_max")
+    stop_dq_max = LaunchConfiguration("stop_dq_max")
     depth_gate_on_engage = LaunchConfiguration("depth_gate_on_engage")
     depth_reset_on_engage = LaunchConfiguration("depth_reset_on_engage")
     encoder_use_shared_contact = LaunchConfiguration("encoder_use_shared_contact")
@@ -108,7 +129,7 @@ def generate_launch_description():
                                           "depth noise; on/off override."),
         DeclareLaunchArgument(
             "scene_xml",
-            default_value=os.path.join(_ws_root, "resources", "go2", "scene_terrain.xml"),
+            default_value=os.path.join(_deploy_root, "resources", "go2", "scene_terrain.xml"),
         ),
         DeclareLaunchArgument("policy_kp", default_value="35.0"),
         DeclareLaunchArgument("policy_kd", default_value="0.6"),
@@ -146,6 +167,17 @@ def generate_launch_description():
                               description="keyboard stick magnitude in [0,1] when "
                                           "use_keyboard:=true (scales top speed: "
                                           "cmd_vx = lin_vel_max * kbd_speed)."),
+        # The robot's own remote as the /joy source, decoded on the robot. This
+        # is the alternative to running deploy_mac/run/wireless_to_joy.py on a
+        # laptop; the three /joy sources (joy_node, keyboard_to_joy,
+        # wireless_joy) are mutually exclusive BY CONSTRUCTION below, because
+        # two publishers flap /policy_engaged at the message rate and the robot
+        # collapses on engage (2026-07-27 real run).
+        DeclareLaunchArgument(
+            "use_wireless_joy", default_value="false",
+            description="Publish /joy from the robot's own remote via "
+                        "wireless_joy.py instead of joy_node, so no laptop is "
+                        "needed. Mutually exclusive with use_joy/use_keyboard."),
         # rl_distill_policy owns the 50 Hz contact filter and publishes the
         # result to depth_encoder_node. The threshold therefore applies once
         # and both proprio copies receive the same 20 ms history sample.
@@ -184,9 +216,30 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "depth_input_topic",
             default_value="/camera/depth/image_rect_raw"),
+        # Real mode only: depth_camera_node's OUTPUT rate. This is not a
+        # throughput knob — it decides which depth AGES the encoder can ever be
+        # fed, and the encoder was trained on depth exactly 80-100 ms old
+        # (depth.latency_range [4,5] x 20 ms). At the node's native 10 Hz the
+        # queue only ever offers ages like 68/168/268 ms, so BOTH neighbours of
+        # the band are off-contract: measured on the Orin NX 2026-10-30, the
+        # chosen frame sat at 132-165 ms with the out-of-band counter climbing
+        # on every tick. 0.0 means passthrough (every camera frame, ~60 Hz) and
+        # makes the band selectable; it costs a few %CPU in depth_camera_node
+        # and nothing in the encoder, which still runs every 5th tick.
+        # The 10.0 default keeps the historical behaviour for callers that do
+        # not care, so sim2sim and the laptop path are untouched.
+        DeclareLaunchArgument(
+            "depth_rate_hz",
+            default_value="10.0",
+            description="depth_camera_node output Hz; 0.0 = every camera frame"),
         # Real mode only: launch the live yaw-prediction viewer window automatically.
-        # Set launch_viewer:=false to suppress (e.g. headless / CI runs).
-        DeclareLaunchArgument("launch_viewer", default_value="true"),
+        # Set launch_viewer:=false to suppress (e.g. headless / CI runs). Defaults
+        # off where view_prediction.py is absent — the Jetson stage ships no
+        # deploy_mac/, so an unconditional default there only printed a python
+        # 'No such file' on every real launch.
+        DeclareLaunchArgument(
+            "launch_viewer",
+            default_value="true" if os.path.isfile(_view_script) else "false"),
         # macOS only: the live MuJoCo viewer (mujoco.viewer.launch_passive)
         # must run under `mjpython`, which owns the main thread for the Cocoa
         # event loop. Set sim_prefix:=mjpython on a Mac; leave empty on Linux
@@ -217,6 +270,38 @@ def generate_launch_description():
         # than the ~0.7 s transient stalls seen under Mac overload 2026-06-19,
         # so benign hiccups still ride the keep-alive. 0.0 disables.
         DeclareLaunchArgument("rl_stall_timeout_s", default_value="1.5"),
+        # Engage edge -> first actor step. Until the actor has produced its FIRST
+        # step the stall timeout above must not run: the policy node is still
+        # gated on its own startup (waiting for the first depth latent), and on
+        # real hardware the 1.5 s timeout fired inside that window — it latched
+        # a stall fault, settled the robot and left the sticks looking dead
+        # (2026-10 real run: 推杆不走). While the grace holds low_level_ctrl
+        # republishes the cached pose so the wire stays fed; once it expires the
+        # normal timeout applies. 0.0 disables (HEAD behaviour).
+        DeclareLaunchArgument(
+            "rl_startup_grace_s", default_value="10.0",
+            description="Seconds after engage during which the RL stall timeout "
+                        "is suppressed, so a slow policy startup is not mistaken "
+                        "for a dead actor. 0 = HEAD behaviour."),
+        # ----- L2+R2 stop ladder (2026-10-29). HOLD republishes the last frame
+        # untouched, which is the answer to "press it and the robot stays put";
+        # PASSIVE is the reference deploy's damped state for everything HOLD
+        # must not touch, i.e. a robot that is already moving.
+        DeclareLaunchArgument(
+            "passive_kd", default_value="3.0",
+            description="Damping kept while PASSIVE holds kp at 0 (the reference "
+                        "deploy's State_Passive value)."),
+        DeclareLaunchArgument(
+            "passive_ramp_s", default_value="0.30",
+            description="Fade kp to 0 over this long instead of slamming it in one "
+                        "tick: on a standing robot the hard cut deletes the holding "
+                        "torque and the body drops. 0 = reference behaviour."),
+        DeclareLaunchArgument(
+            "stop_tilt_max", default_value="0.35",
+            description="HOLD only while |rpy| stays under this (rad, ~20 deg)."),
+        DeclareLaunchArgument(
+            "stop_dq_max", default_value="0.5",
+            description="HOLD only while max |dq| stays under this (rad/s)."),
         DeclareLaunchArgument("depth_gate_on_engage", default_value="1",
                               description="Only advance the depth GRU while the policy is engaged."),
         DeclareLaunchArgument("depth_reset_on_engage", default_value="1",
@@ -256,7 +341,10 @@ def generate_launch_description():
     # standing" ramp, which then follows the sagging joints down instead of
     # driving to the stand pose. Pass use_joy:=false in that setup.
     use_joy_cond = IfCondition(PythonExpression(
-        ["'", use_joy, "' == 'true' and '", use_keyboard, "' == 'false'"]))
+        ["'", use_joy, "' == 'true' and '", use_keyboard, "' == 'false' and '",
+         use_wireless_joy, "' == 'false'"]))
+    wireless_joy_cond = IfCondition(PythonExpression(
+        ["'", use_wireless_joy, "' == 'true' and '", use_keyboard, "' == 'false'"]))
     viewer_cond = IfCondition(PythonExpression(
         ["'", is_simulation, "' == 'false' and '", launch_viewer, "' == 'true'"]))
 
@@ -271,6 +359,12 @@ def generate_launch_description():
         condition=use_kbd_cond,
         output="screen",
     )
+    wireless_joy = Node(
+        package="deploy_rl_policy", executable="wireless_joy.py",
+        name="wireless_joy",
+        condition=wireless_joy_cond,
+        output="screen",
+    )
 
     low_level = Node(
         package="deploy_rl_policy", executable="low_level_ctrl",
@@ -282,6 +376,13 @@ def generate_launch_description():
             "momentary_engage": ParameterValue(momentary_engage, value_type=bool),
             "joy_timeout_s": ParameterValue(joy_timeout_s, value_type=float),
             "rl_stall_timeout_s": ParameterValue(rl_stall_timeout_s, value_type=float),
+            # Floats must go through ParameterValue: a raw LaunchConfiguration
+            # arrives as a string and rclcpp rejects it for a double parameter.
+            "rl_startup_grace_s": ParameterValue(rl_startup_grace_s, value_type=float),
+            "passive_kd": ParameterValue(passive_kd, value_type=float),
+            "passive_ramp_s": ParameterValue(passive_ramp_s, value_type=float),
+            "stop_tilt_max": ParameterValue(stop_tilt_max, value_type=float),
+            "stop_dq_max": ParameterValue(stop_dq_max, value_type=float),
         }],
     )
 
@@ -305,7 +406,11 @@ def generate_launch_description():
     depth_camera = Node(
         package="deploy_rl_policy", executable="depth_camera_node.py",
         name="depth_camera_node",
-        parameters=[{"input_topic": depth_input_topic}],
+        parameters=[{
+            "input_topic": depth_input_topic,
+            "target_hz": ParameterValue(
+                LaunchConfiguration("depth_rate_hz"), value_type=float),
+        }],
         condition=is_real_cond,
     )
 
@@ -374,6 +479,6 @@ def generate_launch_description():
     )
 
     return LaunchDescription(decls + [
-        joy, keyboard_joy, low_level, mujoco_sim, depth_sim, depth_camera, depth_encoder, rl_policy,
-        fused_policy, viewer,
+        joy, keyboard_joy, wireless_joy, low_level, mujoco_sim, depth_sim,
+        depth_camera, depth_encoder, rl_policy, fused_policy, viewer,
     ])

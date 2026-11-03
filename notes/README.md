@@ -18,6 +18,7 @@ not shipped — the notes carry the analysed result.
 - [`debug_2026-07-24_depth_camera_fov.md`](analysis/debug_2026-07-24_depth_camera_fov.md) — Depth-camera near-clip and FOV alignment
 - [`depth_image_identity_proof.md`](analysis/depth_image_identity_proof.md) — Proof that the deploy depth image matches the training render
 - [`drivetrain_armature_friction_sweep_2026-07-28.md`](analysis/drivetrain_armature_friction_sweep_2026-07-28.md) — Reflected inertia (armature) vs. dry friction (frictionloss): the tolerance cliff
+- [`estop_l2r2_stop_ladder_2026-10-29.md`](analysis/estop_l2r2_stop_ladder_2026-10-29.md) — L2+R2 stop: why the old exit left a stand command on the wire, and the latched HOLD/PASSIVE ladder that replaced it
 - [`sim2real_divergence_camera_pitch_2026-07-27.md`](analysis/sim2real_divergence_camera_pitch_2026-07-27.md) — Why real runs failed while sim2sim passed: camera pitch
 - [`standalone_vs_ros_latency_divergence_2026-07-28.md`](analysis/standalone_vs_ros_latency_divergence_2026-07-28.md) — Why the ROS stack outperformed the standalone runner on the same student
 - [`unitree_go2_lowlevel_limits_research_2026-07-24.md`](analysis/unitree_go2_lowlevel_limits_research_2026-07-24.md) — Go2 low-level control: torque limits, command rate, foot-force sensors

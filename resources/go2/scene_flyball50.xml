@@ -1,0 +1,163 @@
+<mujoco model="go2 flyball wall50">
+  <!--
+    Derived from scene_flyball70.xml with two changes:
+      1. wall incline 70° -> 50°
+      2. a second hurdle added at world x = 4.1 (training's
+         flyball_second_hurdle_offset = 2.0 m behind the first)
+    Everything else (spawn, runup, lip, wall thickness, plate length) is
+    untouched, so a 50 vs 70 comparison differs only in those two respects.
+
+    In D31's training config (run_config.yaml):
+      flyball_wall_angle_deg_range = [30.0, 75.0] ± 5.0 jitter
+      difficulty d = lvl / (num_rows - 1) = lvl / 9
+      theta = lerp(30, 75, d) ± 5
+    50° is d = 0.444  ->  terrain level 4  (student/model_5000.pt is pinned at
+    lvl4, see its v3s_ckpt5000_lvl4.mp4 sibling). 70° is d = 0.889 -> level 8,
+    well above max_init_terrain_level = 5 (55°).
+
+    SPAWN ALIGNMENT (changed 2026-10-30). Training lays the course out
+    RELATIVE TO THE SPAWN POINT:
+        spawn -> hurdle 1    flyball_hurdle_front_from_spawn = 1.60 (+-0.30)
+        hurdle 1 -> hurdle 2 flyball_second_hurdle_offset    = 2.00 (+-0.30)
+        hurdle 2 -> wall toe flyball_wall_to_hurdle_rear     = 2.00 (min, +-0.30)
+    so the robot gets only 1.60 m of run-up before the first bar. This scene
+    used to put the obstacles at 2.1 / 4.1 / 6.40, i.e. a 2.10 m first gap --
+    OUTSIDE the trained band. student/model_5000.pt then ran up, reached
+    x = 6.366 (3.4 cm short of the toe) and stopped dead: it never touched
+    the plate. Spawning at --init_x 0.5 fixed it (gaps 1.60 / 2.00 / 2.30,
+    the dog planted and turned around), so the obstacles are now shifted by
+    -0.50 to put that same layout at the scene origin:
+        spawn      x = 0.00
+        hurdle 1   x = 1.60   (gap 1.60)
+        hurdle 2   x = 3.60   (gap 2.00)
+        wall toe   x = 5.90   (gap 2.30)
+    --init_x can now stay at its 0.0 default. The shift is a pure world-x
+    translation, so MuJoCo reproduces the init_x 0.5 run bit-for-bit minus
+    0.50 in x.
+
+    Geometry carried over from the 70° scene:
+      platform_len           = 2.5 m       → spawn platform x ∈ [0, 2.5]
+      hurdles (two)          : height 0.10, thickness 0.02, width 1.2,
+                               at world x 1.6 and 3.6
+      wall_thickness         = 0.35 m
+      plate_length (slope)   = 1.10 m      (flyball_plate_length)
+      plate_width (lateral)  = 1.30 m      (flyball_plate_width)
+      delta_z (wall base)    = 0.0 m       (teacher sets pit_height_offset
+                                            to (0, 0); the original scene's
+                                            0.10 m lip was NOT in training)
+      wall_back_height       = wall_height (stops at the ramp top; the real
+                                            course has no tall wall behind the
+                                            plate, so the 2.0 m
+                                            flyball_backing_wall_height used in
+                                            training is deliberately NOT
+                                            modelled here)
+      wall_back_width        = plate_width (1.30 m, same as the ramp)
+
+    Derived for theta = 50°:
+      wall_height = plate_length * sin(50°) = 1.10 * 0.766044 = 0.84265 m
+      horizontal reach = 1.10 * cos(50°) = 0.70711 m
+      toe  = (5.90, 0, 0)  (delta_z = 0, flush with the floor)
+      top of face = (5.90 + 0.70711, 0, 0.84265) = (6.60711, 0, 0.84265)
+      face midpoint          = (6.25356, 0, 0.42133)
+      inward normal          = (sin50, 0, -cos50) = (0.766044, 0, -0.642788)
+      ramp box center = midpoint + 0.175 * normal
+                      = (6.38761, 0, 0.30884)
+      euler_y = 90° - 50° = 40° = 0.6981317008 rad
+
+    NOTE on the wall behind the plate: flyball_wall_terrain does raise a
+    2.0 m backing block over all columns (flyball_backing_wall_height), but
+    the REAL course has no wall that tall behind the plate. Only the inclined
+    face is used by the robot, so the scene models just the ramp plus a short
+    back block that stops at the ramp top. A 2.0 m backing wall was measured
+    here once (max_x 6.43, plant at base_z 0.476) and made no difference to
+    whether the plant completes, which matches the real-course reasoning.
+  -->
+  <include file="go2.xml"/>
+
+  <option timestep="0.005"/>
+
+  <statistic center="2.5 0 0.5" extent="3.5"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20" offwidth="1280" offheight="720"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="obstacle"   rgba="0.55 0.55 0.6 1.0"/>
+    <material name="wall_face"  rgba="0.45 0.45 0.55 1.0"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.01"/>
+
+    <!--
+      Hurdles: width 1.20, height 0.10, thickness 0.02, at world x = 1.6 and 3.6.
+      Training: flyball_single_hurdle_width = 1.20 / width_range (1.00, 1.30),
+      height drawn uniform in (0.07, 0.12) with flyball_hurdle_zero_prob = 0.25
+      making a whole slot EMPTY a quarter of the time. This scene pins both
+      bars at 0.10 / width 1.20 so the A/B is repeatable; a bar-free tile is
+      what 25% of the training rows actually look like, so a flattering
+      sim2sim can also be produced with --hurdle 0.
+
+      Thickness: training uses flyball_single_hurdle_thickness = 0.01 m on a
+      1 cm heightfield. Kept at 0.02 here because a 1 cm MuJoCo box is thin
+      enough to tunnel; 2 cm is still within one heightfield cell of training.
+
+      Two variants were measured with student/model_5000.pt at 50 deg:
+        h0.125 / 0.02 thick : clears hurdle 1, then stalls 5 s straddling
+                              hurdle 2 (x stuck at 4.40 from t=4.7 to 9.3)
+        h0.125 / 0.10 thick : falls on hurdle 1 (base_z 0.077, upright=0)
+        h0.10  / 0.02 thick : both hurdles cleared with no stall (chosen)
+    -->
+    <geom name="flyball_hurdle1" type="box"
+          pos="1.6 0 0.05"
+          size="0.01 0.60 0.05"
+          material="obstacle"
+          friction="1.0 0.005 0.01"/>
+
+    <geom name="flyball_hurdle2" type="box"
+          pos="3.6 0 0.05"
+          size="0.01 0.60 0.05"
+          material="obstacle"
+          friction="1.0 0.005 0.01"/>
+
+    <!--
+      Inclined plate — the 1.30 m wide lane the robot has to hit. Its toe sits
+      flush on the floor at x = 5.90 (delta_z = 0, no lip: training overrides
+      flyball_pit_height_offset_range to (0, 0)).
+      Local axes after euler (0, 0.6981317, 0):
+        local +x → world ( cos40°, 0, -sin40°) = ( 0.766, 0, -0.643) inward normal
+        local +y → world ( 0, 1, 0 )                                lateral
+        local +z → world ( sin40°, 0,  cos40°) = ( 0.643, 0,  0.766) up-the-slope
+      Slope length 1.10 m centered on the inclined face midpoint (6.25356, 0, 0.42133);
+      offset inward by half-thickness 0.175 in (sin50°, 0, -cos50°) = (0.766, 0, -0.643)
+      → box center (6.38761, 0, 0.30884).
+      half-extents: 0.175 × 0.65 × 0.55  (thickness × width × slope-length)/2
+    -->
+    <geom name="flyball_wall_ramp" type="box"
+          pos="6.38761 0 0.30884"
+          size="0.175 0.65 0.55"
+          euler="0 0.6981317 0"
+          material="wall_face"
+          friction="1.0 0.005 0.01"/>
+
+    <!--
+      Back block behind the plate — stops at the ramp's TOP edge
+      (z = 0.84265), 0.35 m thick, 1.30 m wide like the ramp. It only closes
+      the ramp's back face; it is NOT a wall the robot can plant against.
+      Center: x = 6.60711 + 0.175 = 6.78211, z = 0.84265/2; size 0.175 × 0.65 × 0.421325
+    -->
+    <geom name="flyball_wall_back" type="box"
+          pos="6.78211 0 0.421325"
+          size="0.175 0.65 0.421325"
+          material="obstacle"
+          friction="1.0 0.005 0.01"/>
+  </worldbody>
+</mujoco>

@@ -23,8 +23,8 @@ Usage:
       lin_vel_max:=1.5 speed:=1.0 engage_duration:=10.0
 """
 import os
+import sys
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
@@ -32,18 +32,19 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterValue
 
-# install/<pkg>/share/<pkg> -> 3 up -> the repo (colcon workspace) root.
-_WS_ROOT = os.path.normpath(
-    os.path.join(get_package_share_directory("deploy_rl_policy"), "..", "..", "..")
-)
+# Deploy root, i.e. the directory holding models/, resources/ and videos/ — NOT
+# `<share>/../../..`, which is `install/`. See deploy_paths.py for the off-by-one
+# that quietly pointed the default ckpt at install/models/.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from deploy_paths import default_ep_root, deploy_root
+
+_DEPLOY_ROOT = deploy_root()
 # The training repo supplies the policy classes (Actor / Estimator /
 # RecurrentDepthBackbone): https://github.com/Roman-089/go2-flyball-parkour
-# Override with $EP_ROOT or the ep_root: launch argument.
-_EP_ROOT = os.environ.get(
-    "EP_ROOT", os.path.join(os.path.dirname(_WS_ROOT), "go2-flyball-parkour")
-)
+_EP_ROOT = default_ep_root(_DEPLOY_ROOT)
 _DEFAULT_CKPT = os.path.join(
-    _WS_ROOT, "models", "L00-02-flat-baseline-delay-distillation-noised", "model_14500.pt"
+    _DEPLOY_ROOT, "models", "L00-02-flat-baseline-delay-distillation-noised",
+    "model_14500.pt",
 )
 
 
@@ -126,12 +127,12 @@ def generate_launch_description():
             # a static crouch. The "smooth" variant drops the hfield and the
             # same student honestly clears the obstacles.
             default_value=os.path.join(
-                _WS_ROOT, "resources", "go2", "scene_2hurdles_smooth.xml"
+                _DEPLOY_ROOT, "resources", "go2", "scene_2hurdles_smooth.xml"
             ),
         ),
         DeclareLaunchArgument(
             "output",
-            default_value=os.path.join(_WS_ROOT, "videos", "ros_lay2stand.mp4"),
+            default_value=os.path.join(_DEPLOY_ROOT, "videos", "ros_lay2stand.mp4"),
         ),
         DeclareLaunchArgument("lin_vel_max", default_value="1.5"),
         DeclareLaunchArgument("speed", default_value="1.0"),

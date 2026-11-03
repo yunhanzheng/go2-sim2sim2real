@@ -1,5 +1,9 @@
 # Jetson RealSense service — install
 
+This file covers the camera only. For running the full deploy stack on the robot
+itself (camera + policy + `/lowcmd`, no laptop in the loop), see
+[`RUNBOOK_onboard.md`](RUNBOOK_onboard.md).
+
 Two images exist in the field and the install differs:
 
 | Image | Unit | Driver |

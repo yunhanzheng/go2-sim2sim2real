@@ -367,6 +367,19 @@ def main():
             eprop_t = torch.from_numpy(eprop).float().unsqueeze(0)
             eprop_t[:, 6:8] = 0.0                              # yaw mask before encoder
             depth_t = render_depth().float()                  # (1,58,87)
+            # DUMP_DEPTH=1: print the SAME statistics that .tmp_depth_stat.py
+            # prints for /rl/depth_image on the robot, so the two can be compared
+            # directly when the encoder's |latent| differs between sim and real.
+            if os.environ.get("DUMP_DEPTH"):
+                _a = depth_t.squeeze(0).numpy()
+                print(f"[depth] min={_a.min():+.3f} max={_a.max():+.3f} "
+                      f"mean={_a.mean():+.3f} std={_a.std():.3f} "
+                      f"far(>=2m)={100.0 * (_a > 0.49).mean():.1f}% "
+                      f"near(<=0.1m)={100.0 * (_a > 0.45).mean():.1f}%")
+                print(f"[prop] roll={roll:+.3f} pitch={pitch:+.3f} "
+                      f"gyro={np.round(gyro, 3).tolist()} "
+                      f"q0={np.round(qj[:3], 3).tolist()} dq0={np.round(dqj[:3], 3).tolist()} "
+                      f"contact_filt={efilt} cmd_vx={cmd_vx:+.2f}")
             with torch.no_grad():
                 out = encoder(depth_t, eprop_t).squeeze(0)     # (34,)
             new_latent = out[:DEPTH_LATENT_DIM].unsqueeze(0)

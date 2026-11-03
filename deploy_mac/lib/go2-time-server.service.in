@@ -1,0 +1,20 @@
+# Host side of the robot's clock, as a systemd USER unit — no root anywhere,
+# because the server binds a high port and keeps no state.
+#
+# Installed by deploy_mac/lib/install_time_server.sh, which substitutes @REPO@,
+# @BIND@ and @PORT@. See deploy_mac/jetson/CLOCK.md for the whole picture.
+
+[Unit]
+Description=Go2 clock source (serves this host's time to the Jetson)
+After=network-online.target
+
+[Service]
+Type=simple
+# -u: the reply is one line, but never leave it sitting in a block buffer.
+# The bind address is explicit so this never answers on wifi or VPN interfaces.
+ExecStart=/usr/bin/python3 -u @REPO@/deploy_mac/lib/time_server.py @BIND@ @PORT@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

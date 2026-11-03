@@ -11,9 +11,21 @@ Resulting FSM (handled by the C++ low_level_ctrl):
   B           lay -> stand           (buttons[1])
   A           stand -> lay           (buttons[0])
   L1 + R1     stand -> engage policy (buttons[4] & [5])
-  L2 + R2     quit/e-stop            (axes[2]==-1 && axes[5]==-1)
+  L2 + R2     stop ladder, each press gives up a little more authority
+              (axes[2]==-1 && axes[5]==-1, the stream never stops):
+                1st  settled -> HOLD    (last frame republished unchanged: it does
+                                        not move) / moving -> PASSIVE (kp -> 0)
+                2nd  HOLD -> PASSIVE    (limb goes limp)
+                3rd  PASSIVE -> quit
 
 READ-ONLY w.r.t. the robot: only republishes controller input.
+
+There is now an in-package equivalent, `src/deploy_rl_policy/scripts/wireless_joy.py`,
+which does the same job ON the robot from the same `/wirelesscontroller` topic, so
+the drive stack does not need a laptop. Keep the two in step: the bit constants
+below are the reference this file and that one both follow. That one reads only
+`/wirelesscontroller`, never `LowState.wireless_remote` — the latter is a 500 Hz
+mirror of the last frame, so it never goes silent and cannot carry liveness.
 """
 import rclpy
 from rclpy.node import Node

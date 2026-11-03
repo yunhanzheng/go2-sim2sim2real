@@ -143,12 +143,32 @@ OUT="$OUTDIR/${SLUG}.mp4"
 LOG="$OUTDIR/launch.log"
 
 # ---- env (NOTE: no `set -u`; conda ros hook has unbound CONDA_BUILD) ---------
-source ~/miniforge3/etc/profile.d/conda.sh 2>/dev/null \
-  || source ~/miniconda3/etc/profile.d/conda.sh 2>/dev/null \
-  || source ~/anaconda3/etc/profile.d/conda.sh 2>/dev/null
-conda activate ros_humble
-export GO2_IFACE=lo0
+# conda is optional, and sourcing it unconditionally is actively harmful: an
+# unrelated conda base rewrites python3 to its own version (3.13 here) and rclpy,
+# which is built for the system 3.10, then dies with ModuleNotFoundError
+# rclpy._rclpy_pybind11. Only touch conda when it really carries ros_humble.
+if conda env list 2>/dev/null | grep -qE '^ros_humble[[:space:]]'; then
+  for _conda_base in "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" "$(conda info --base 2>/dev/null)"; do
+    if [ -r "$_conda_base/etc/profile.d/conda.sh" ]; then
+      source "$_conda_base/etc/profile.d/conda.sh"
+      break
+    fi
+  done
+  conda activate ros_humble
+fi
+# Loopback is lo0 on macOS and lo on Linux. CycloneDDS refuses to create the
+# domain when the pinned name matches no interface ("lo0: does not match an
+# available interface"), so pick it by platform.
+if [ -z "${GO2_IFACE:-}" ]; then
+  if [ "$(uname -s)" = "Linux" ]; then export GO2_IFACE=lo; else export GO2_IFACE=lo0; fi
+fi
 source "$ROOT/deploy_mac/env.sh"
+# rclpy is compiled against the system python. A conda base inherited from the
+# calling shell puts its own python3 first, which fails as
+# ModuleNotFoundError: rclpy._rclpy_pybind11.
+if [ "$(uname -s)" = "Linux" ]; then
+  export PATH="/usr/bin:$PATH"
+fi
 export MUJOCO_GL=glfw
 export KMP_DUPLICATE_LIB_OK=TRUE
 export EP_FEED_PRED_YAW="$YAW_HEAD"   # 1 => RecurrentDepthBackbone builds the 34-D yaw head

@@ -439,7 +439,18 @@ def main():
                          "0.5=reality-tuned, 1=2x artifact rates. Supersedes "
                          "--depth_noise_m when nonzero.")
     ap.add_argument("--stereo_shadow", choices=("auto", "on", "off"), default="auto",
-                    help="D435 stereo geometry; auto enables with depth noise.")
+                    help="D435 stereo geometry; auto enables with depth noise. Student v3 "
+                         "trains with stereo_shadow=True at baseline 0.010, so pass 'on' "
+                         "to match it even with --depth_noise_scale 0.")
+    ap.add_argument("--depth_render_hw", type=str, default="106x60",
+                    help="Resolution the MuJoCo DEPTH renderer runs at, 'WxH'. Training "
+                         "ray-casts at depth.original = (480,270) with horizontal_fov 87, "
+                         "then F.interpolate(size=(60,106), mode='bicubic') — i.e. a 4.5x "
+                         "supersample that low-passes the depth edges. The 106x60 default "
+                         "renders straight at the policy grid and skips that step; "
+                         "480x270 reproduces the training chain. Measured on "
+                         "scene_flyball50 at 0.8 m from the plate's toe: mean |diff| "
+                         "fell from 20 cm to 0 on the silhouette pixels."),
     ap.add_argument("--init_x", type=float, default=0.0,
                     help="Override the initial base_x. Default 0 (scene origin). Use to "
                          "spawn the robot closer to obstacles so the depth camera sees them "
@@ -466,6 +477,13 @@ def main():
         ap.error("--depth_noise_scale must be in [0, 1]")
     if args.proprio_latency_s < 0.0 or args.depth_latency_s < 0.0:
         ap.error("latencies must be non-negative")
+    try:
+        _rw, _rh = (int(_v) for _v in args.depth_render_hw.lower().split("x"))
+        if _rw <= 0 or _rh <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        ap.error("--depth_render_hw must look like 106x60 or 480x270")
+    args.depth_render_w, args.depth_render_h = _rw, _rh
     if args.seed is not None:
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -596,6 +614,23 @@ def main():
         m.cam_quat[cam_id] = quat
         print(f"[mj] front_depth_cam pitch = {args.cam_pitch_deg:.2f} deg down")
 
+    # Depth render resolution. Training ray-casts at depth.original = (480, 270)
+    # with camera_props.horizontal_fov = 87, then F.interpolate's the frame down
+    # to 106x60. MuJoCo's cam_fovy is a VERTICAL fov, so simply widening the
+    # framebuffer would also widen hFOV; recover the policy grid's hFOV and
+    # re-derive vFOV for the render grid so only the sampling density changes.
+    if (args.depth_render_w, args.depth_render_h) != (DEPTH_RAW_W, DEPTH_RAW_H):
+        _h_fov = 2.0 * math.degrees(math.atan(
+            math.tan(math.radians(m.cam_fovy[cam_id]) / 2.0)
+            * (DEPTH_RAW_W / DEPTH_RAW_H)))
+        _v_fov = 2.0 * math.degrees(math.atan(
+            math.tan(math.radians(_h_fov) / 2.0)
+            * (args.depth_render_h / args.depth_render_w)))
+        m.cam_fovy[cam_id] = _v_fov
+        print(f"[mj] depth render {args.depth_render_w}x{args.depth_render_h}: "
+              f"hFOV {_h_fov:.3f} deg, fovy {_v_fov:.3f} deg "
+              f"(policy grid stays {DEPTH_RAW_W}x{DEPTH_RAW_H})")
+
     # initialize qpos to a standing pose (DEFAULT_DOF_POLICY is in MJ order)
     # Identity quat faces world +x. Scenes whose corridor is along +y (e.g.
     # scene_two_hurdles_wall_turn) need --init_yaw_deg 90 so forward = +y.
@@ -642,7 +677,8 @@ def main():
     depth_renderer = None
     record_renderer = None
     if args.depth_mode == "render":
-        depth_renderer = mujoco.Renderer(m, height=DEPTH_RAW_H, width=DEPTH_RAW_W)
+        depth_renderer = mujoco.Renderer(m, height=args.depth_render_h,
+                                         width=args.depth_render_w)
         depth_renderer.enable_depth_rendering()
         depth_scene_option = depth_common.mujoco_depth_scene_option()
         stereo_enabled = (args.depth_noise_scale > 0.0
@@ -650,6 +686,8 @@ def main():
                           else args.stereo_shadow == "on")
         stereo_depth = (depth_common.MujocoStereoDepth(
             m, cam_id,
+            height=args.depth_render_h,
+            width=args.depth_render_w,
             baseline=depth_common.TRAIN_DEPTH_CFG["stereo_baseline"],
             eps=depth_common.TRAIN_DEPTH_CFG["stereo_eps"],
             radial_clip=depth_common.depth_radial_clip_enabled(),
@@ -841,13 +879,24 @@ def main():
             else:
                 depth_renderer.update_scene(
                     d, camera="front_depth_cam", scene_option=depth_scene_option)
-                raw = depth_renderer.render()                # (60, 106) positive metres
+                raw = depth_renderer.render()                # positive metres
                 if stereo_depth is not None:
                     raw = stereo_depth(d, raw)
-                elif depth_radial_max is not None:
+                elif (depth_radial_max is not None
+                      and depth_radial_max.shape == raw.shape):
                     raw = np.where(
                         raw > depth_radial_max, np.float32(DEPTH_FAR), raw).astype(np.float32)
                 raw = depth_common.clip_mujoco_too_close_to_far(raw)
+                if raw.shape != (DEPTH_RAW_H, DEPTH_RAW_W):
+                    # Training's supersample, in training's order: stereo shadow and
+                    # empty_below_m are applied at depth.original (480x270), then
+                    # legged_robot.process_depth_image does
+                    #   F.interpolate(size=(60,106), mode="bicubic", align_corners=False)
+                    # Everything below this point then sees the policy grid.
+                    _sup = torch.from_numpy(raw.astype(np.float32))[None, None]
+                    _sup = F.interpolate(_sup, size=(DEPTH_RAW_H, DEPTH_RAW_W),
+                                         mode="bicubic", align_corners=False)
+                    raw = np.ascontiguousarray(_sup.squeeze(0).squeeze(0).numpy())
                 if depth_degrader is not None:
                     depth_in = depth_degrader(raw)
                 else:

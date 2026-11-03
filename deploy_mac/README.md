@@ -18,9 +18,10 @@ root because nearly every script sources or calls them.
 | `sim/` | sim2sim rendering (`render_sim2sim.sh`, `render_sim2sim_noros.py`, `verify_mujoco_depth_noise.py`) |
 | `camera/` | depth camera + clock (`view_depth*`, `snap_depth.py`, `export_bag_depth.py`, `recompute_depth_bag.py`, `camera_metadata_latency.py`, `check_camera_clock.py`, `sync_jetson_clock.sh`, `fake_depth_latent.py`) |
 | `analysis/` | post-run analysis (`analyze_run.py`, `analyze_latency_logs.py`, `log_*.py`, `monitor_deploy.py`, `read_target_pos.py`, `plot_*.py`) |
-| `diag/` | pre-flight and debug (`check_deploy_contract.py`, `check_lowstate.sh`, `ros_lowstate_check.py`, `selftest_dds.py`, `decode_*.py`, `view_prediction.*`) |
-| `lib/` | shared helpers (`log_git_state.sh`, `build_cpp.sh`, `cyclonedds_en13.xml`) |
-| `runbooks/`, `stubs/`, `jetson/` | unchanged |
+| `diag/` | pre-flight and debug (`check_deploy_contract.py`, `check_joy_live.py`, `check_lowstate.sh`, `check_wireless_joy.py`, `ros_lowstate_check.py`, `selftest_dds.py`, `decode_*.py`, `view_prediction.*`) — the two `joy` checkers are a pair: `check_wireless_joy.py` feeds synthetic messages on a sandbox domain (automatic, no robot), `check_joy_live.py` watches a real remote on the robot's own domain (needs a person, but refuses to start unless `/joy` has no subscribers, so nothing can move) |
+| `lib/` | shared helpers (`log_git_state.sh`, `build_cpp.sh`, `cyclonedds_en13.xml`, `time_server.py` + `install_time_server.sh` — the clock source the Jetson pulls from) |
+| `runbooks/`, `stubs/` | unchanged |
+| `jetson/` | Jetson-side services; the clock sync design and install is `jetson/CLOCK.md` |
 
 Runs are written to `run_logs/<kind>/<ckptdir>__<model>/<timestamp>/`, one
 folder per policy.
@@ -153,11 +154,17 @@ source deploy_mac/env.sh         # re-source to overlay the new install
 Python C-API symbols in the flat namespace). Verified: node starts, publishes `/mujoco/lowcmd`.
 
 ### Driving the FSM from the Go2's own remote
-The C++ node reads `/joy` (Xbox layout). Bridge the Go2 remote (`/wirelesscontroller`)
-to it — no separate gamepad needed:
+The C++ node reads `/joy` (Xbox layout). Bridge the Go2 remote to it — no separate
+gamepad needed:
 ```bash
 python deploy_mac/run/wireless_to_joy.py   # B=stand, A=lay, L1+R1=engage, L2+R2=quit
 ```
+Or let the robot do it itself and drop the laptop: `use_wireless_joy:=true` runs
+`src/deploy_rl_policy/scripts/wireless_joy.py`, which publishes `/joy` straight from
+the board's decoded `/wirelesscontroller` topic. `--probe` prints keys and sticks
+without publishing. `LowState.wireless_remote` is deliberately not used as a source —
+it is a 500 Hz mirror of the last frame, so it never goes silent and cannot carry
+liveness; §6 of `runbooks/real_run_runbook_ubuntu.md` has the measurements.
 
 ### Full stack (⚠️ REAL motors — hoist the robot, Go2 sport mode OFF)
 ```bash

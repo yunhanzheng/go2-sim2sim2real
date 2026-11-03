@@ -14,12 +14,18 @@ ROS2_WS="${ROS2_WS:-$HOME/go2/ros2_ws}"
 GO2_IFACE="${GO2_IFACE:-en13}"
 
 # 1. conda + RoboStack ros-humble (activation scripts pull in /opt-style ROS setup)
-source "$HOME/miniforge3/etc/profile.d/conda.sh"
-# Re-running `conda activate` while this RoboStack environment is already
-# active re-enters its ament setup hooks under zsh and can lose the helper
-# function `ament_zsh_to_array`. Keep sourcing this script idempotent.
-if [ "${CONDA_DEFAULT_ENV:-}" != "$ROS_ENV" ]; then
-  conda activate "$ROS_ENV"
+# On a Linux box with system ROS humble there is no RoboStack env — fall through to
+# /opt/ros/humble so the same script works on both.
+if [ -r "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then
+  source "$HOME/miniforge3/etc/profile.d/conda.sh"
+  # Re-running `conda activate` while this RoboStack environment is already
+  # active re-enters its ament setup hooks under zsh and can lose the helper
+  # function `ament_zsh_to_array`. Keep sourcing this script idempotent.
+  if [ "${CONDA_DEFAULT_ENV:-}" != "$ROS_ENV" ]; then
+    conda activate "$ROS_ENV"
+  fi
+elif [ -r /opt/ros/humble/setup.bash ] && [ -z "${ROS_DISTRO:-}" ]; then
+  source /opt/ros/humble/setup.bash
 fi
 
 # 2. overlay the built unitree_go / unitree_api / unitree_hg messages

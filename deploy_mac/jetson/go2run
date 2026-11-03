@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# One-command onboard start: pre-flight -> launch -> wait for ready -> say "press B".
+#
+#   go2run            # d31  (hurdle, default)
+#   go2run l00        # L00-02 (flat)
+#
+# Refuses to start when the robot is not ready, and names what is missing instead of
+# making the operator diff four command outputs. Everything it checks is read-only.
+# (no `set -u`: ROS setup scripts reference unset vars)
+set +o pipefail
+
+source "$HOME/go2_deploy/env.sh"
+ROOT="$GO2_DEPLOY_ROOT"
+MODEL="${1:-d31}"
+
+say()  { printf '%s\n' "$*"; }
+fail() { printf '[!!] %s\n     -> %s\n' "$1" "$2"; exit 1; }
+
+# --- pre-flight ------------------------------------------------------------------
+
+n=$(pgrep -fc 'deploy_rl_policy/lib')
+[ "${n:-0}" -eq 0 ] || fail "$n deploy nodes are already running" \
+  "tmux kill-session -t go2   (or attach and Ctrl-C)"
+
+systemctl is-active --quiet go2-realsense-humble \
+  || fail "go2-realsense-humble is not active" "sudo systemctl restart go2-realsense-humble"
+
+timeout 6 ros2 topic echo --once /camera/depth/image_rect_raw --field header >/dev/null 2>&1 \
+  || fail "nothing on /camera/depth/image_rect_raw" "sudo systemctl restart go2-realsense-humble"
+
+timeout 6 ros2 topic echo --once /lowstate --field header >/dev/null 2>&1 \
+  || fail "nothing on /lowstate" "robot link down: ping 192.168.123.161"
+
+c=$(ros2 topic info /joy 2>/dev/null | sed -n 's/^Publisher count: *//p')
+[ -z "$c" ] || [ "$c" -eq 0 ] \
+  || fail "$c /joy publisher(s) already alive" \
+         "a stray joy_node / wireless_to_joy would flap /policy_engaged - kill it first"
+
+# --- launch ----------------------------------------------------------------------
+
+tmux kill-session -t go2 2>/dev/null
+tmux new-session -d -s go2 -x 220 -y 50 "bash $ROOT/start_real.sh $MODEL"
+say "[..] starting $MODEL"
+
+LOG=""
+for _ in $(seq 1 70); do
+  LOG=$(ls -t "$ROOT"/run_logs/real/*.log 2>/dev/null | head -1)
+  [ -n "$LOG" ] && grep -q 'distill_fused_policy ready' "$LOG" && break
+  sleep 1
+done
+
+if ! grep -q 'distill_fused_policy ready' "$LOG" 2>/dev/null; then
+  say "[!!] stack did not come up in 70 s - tail of $LOG:"
+  tail -15 "$LOG"
+  exit 1
+fi
+
+# --- what the operator does next -------------------------------------------------
+
+say "[OK] up: $(basename "$LOG")"
+say ""
+say "     B          stand (~2 s)"
+say "     L1+R1      hold to engage, when it is steady"
+say "     A          lay down"
+say "     L2+R2      stop ladder: HOLD -> PASSIVE -> exit"
+say ""
+say "     follow:  tmux attach -t go2"
